@@ -9,12 +9,12 @@
 -- of every eye, the highlight down a Pikachu's cheek: all of it turns into a
 -- hole with the world showing through, and the mon reads as a stencil.
 --
--- So the paper is put back, and only where the paper was. Which pixels those
--- are is the whole problem, and it has to be ANSWERED rather than looked up:
--- the hardware drew the mon's white belly and the white field behind it with
--- the same shade, the decoder keyed both to the same alpha, and nothing in the
--- image says which was which. There is no distinction to recover; there is one
--- to draw.
+-- So the paper is put back, and only where the paper was: the pic is read
+-- back once, the transparent region OUTSIDE the figure is flood-filled from
+-- the border, and every transparent pixel the flood could not reach -- every
+-- hole enclosed by the artwork -- is filled opaque white. The silhouette is
+-- untouched, so the mon still cuts cleanly against the world; only its
+-- insides stop being see-through.
 --
 -- The rule is a flood fill from OUTSIDE the figure: whatever the background
 -- can reach is background, and whatever it cannot is paper. What makes that
@@ -116,7 +116,8 @@ local function readBack(img)
   return ok and data or nil
 end
 
--- The box the artwork actually occupies, or nil for a pic with no ink in it.
+-- Mark every transparent pixel reachable from the border. That set is the
+-- OUTSIDE; everything transparent it does not reach is an enclosed hole.
 --
 -- Not the image: a pic is centred in a 7x7-tile buffer and a small mon leaves
 -- whole rows and columns of nothing around itself. The bottom of THIS box is
@@ -154,7 +155,7 @@ BattlePics.DRAIN = 6
 -- An explicit stack rather than recursion: a 56x56 pic is three thousand
 -- pixels and a keyed-out background is most of them, which is a deeper call
 -- chain than is worth risking for no gain.
-local function markOutside(data, w, h, x0, y0, x1, y1)
+local function markOutside(data, w, h)
   local outside = {}
   local stack, top = {}, 0
   local function clear(x, y)
@@ -162,32 +163,22 @@ local function markOutside(data, w, h, x0, y0, x1, y1)
     return a <= CUT
   end
   local function push(x, y)
-    if x < x0 or y < y0 or x > x1 or y > y1 then return end
+    if x < 0 or y < 0 or x >= w or y >= h then return end
     local key = y * w + x
     if outside[key] then return end
-    if not clear(x, y) then return end
+    local _, _, _, a = data:getPixel(x, y)
+    if a > CUT then return end
     outside[key] = true
     top = top + 1
     stack[top] = key
   end
-  for x = x0, x1 do push(x, y0) end
-  for y = y0, y1 do
-    push(x0, y)
-    push(x1, y)
+  for x = 0, w - 1 do
+    push(x, 0)
+    push(x, h - 1)
   end
-  -- the bottom, run by run: a wide one is the gap between two legs and lets
-  -- the world through, a narrow one is where a belly ran out and is sealed
-  local x = x0
-  while x <= x1 do
-    if clear(x, y1) then
-      local from = x
-      while x <= x1 and clear(x, y1) do x = x + 1 end
-      if (x - from) > BattlePics.DRAIN then
-        for k = from, x - 1 do push(k, y1) end
-      end
-    else
-      x = x + 1
-    end
+  for y = 0, h - 1 do
+    push(0, y)
+    push(w - 1, y)
   end
   while top > 0 do
     local key = stack[top]
@@ -214,16 +205,12 @@ function BattlePics.filled(img)
     local data = readBack(img)
     if not data then return end
     local w, h = data:getDimensions()
-    local x0, y0, x1, y1 = inkBounds(data, w, h)
-    if not x0 then return end          -- a pic with nothing drawn in it
-    local outside = markOutside(data, w, h, x0, y0, x1, y1)
+    local outside = markOutside(data, w, h)
     local fill = BattlePics.FILL
     local changed = false
-    -- only inside the box: everything beyond it is frame the artist never
-    -- reached, and filling that would put the mon in a white rectangle
-    for y = y0, y1 do
+    for y = 0, h - 1 do
       local row = y * w
-      for x = x0, x1 do
+      for x = 0, w - 1 do
         if not outside[row + x] then
           local _, _, _, a = data:getPixel(x, y)
           if a <= CUT then

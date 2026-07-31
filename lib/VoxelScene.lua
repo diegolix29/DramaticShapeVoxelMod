@@ -51,8 +51,12 @@ VoxelScene._modeColors = modeColors   -- named for the suite
 
 -- ------------------------------------------------------------------ sky --
 --
--- The void behind the diorama is SKY, at every rung -- so the world reads as
--- standing under something rather than floating on a black plate.
+-- At the top rung the camera is pitched far enough over that the horizon
+-- comes into frame and a good part of the picture is void -- so the void
+-- becomes the sky, and the diorama reads as standing under something
+-- rather than floating on a black plate. Below that rung the camera looks
+-- down steeply enough that the horizon is off-screen, and painting the
+-- void only tints the gaps between meshes, so it stays transparent.
 --
 -- What is up there differs by rung, and the sky follows it rather than being
 -- retuned for each. At 75 degrees the camera is pitched far enough over that
@@ -83,32 +87,26 @@ local SKY_SHADES = { { 222, 242, 255 }, { 135, 196, 240 },
                      { 64, 120, 192 }, { 16, 40, 80 } }
 local SKY_SHADE = 2       -- the ramp's "sky" proper; 1 is its highlight
 
--- the ramp as the display mode has it, which is the only form anything here
--- should be reading it in
-local function skyRamp()
-  return PaletteFX.effectiveColors(SKY_SHADES) or SKY_SHADES
-end
-
--- Full strength at every rung: the sky is painted wherever the diorama is.
---
--- The ramp that is left is for ARRIVAL alone. Switching the mode on eases the
--- camera up from flat, and the sky comes up with it over the first few degrees
--- rather than appearing whole on the keypress -- which is also what keeps a
--- top-down camera, where there is no void worth speaking of, from painting one.
-local SKY_FADE_DEG = 8
-
+-- fade across the approach to the top rung, so the sky arrives with the
+-- camera tween instead of popping in on the keypress
 local function skyStrength(angleRad)
   local deg = math.deg(angleRad or 0)
-  if deg <= 0 then return 0 end
-  local t = deg / SKY_FADE_DEG
-  return t < 1 and t or 1
+  local from = Voxel.ANGLES_DEG[Voxel.MAX_LEVEL] or 50      -- the rung below
+  local to = Voxel.ANGLES_DEG[Voxel.MAX_LEVEL + 1] or 75    -- the top rung
+  -- Disable sky at exactly 75 degrees to avoid conflict with custom backgrounds
+  if math.abs(deg - 75) < 0.1 then return 0 end
+  if to <= from then return deg >= to and 1 or 0 end
+  local t = (deg - from) / (to - from)
+  if t < 0 then return 0 end
+  if t > 1 then return 1 end
+  return t
 end
 
 -- One shade off the sky ramp, transformed by the display mode, as an
 -- {r, g, b, a} in 0..1. `shade` picks the rung (SKY_SHADE is the sky
 -- proper; 4 is its darkest, which is what an indoor void wants).
 function VoxelScene.skyShade(shade, alpha)
-  local shades = skyRamp()
+  local shades = PaletteFX.effectiveColors(SKY_SHADES) or SKY_SHADES
   local c = shades[shade] or SKY_SHADES[shade] or SKY_SHADES[SKY_SHADE]
   return { c[1] / 255, c[2] / 255, c[3] / 255, alpha or 1 }
 end
@@ -122,14 +120,7 @@ end
 function VoxelScene.skyColor(map, t)
   if not (map and map.def and Map.isOutdoor(map.def)) then return nil end
   if not t or t <= 0 then return nil end
-  local sky = VoxelScene.skyShade(SKY_SHADE, t)
-  -- outdoors the flat fill follows the CLOCK: it becomes the hour's haze --
-  -- gold at dusk, navy at night -- so a battle staged on the map at
-  -- midnight is under a midnight void, not a noon one. Free-roam is
-  -- unchanged by this: Sky.dress overwrites the fill with the same value.
-  local haze = Sky.haze()
-  if haze then sky[1], sky[2], sky[3] = haze[1], haze[2], haze[3] end
-  return sky
+  return VoxelScene.skyShade(SKY_SHADE, t)
 end
 
 -- The free-roam sky: the flat one above, dressed with the banded gradient
@@ -142,9 +133,7 @@ end
 -- flat fill it has always had -- there is no gradient to see from down there,
 -- and the arena's look is not this rung's to change.
 local function skyFor(map)
-  local sky = VoxelScene.skyColor(map, skyStrength(Voxel.angle))
-  if not sky then return nil end
-  return Sky.dress(sky)
+  return VoxelScene.skyColor(map, skyStrength(Voxel.angle))
 end
 
 VoxelScene._skyFor = skyFor           -- named for the suite
@@ -200,9 +189,32 @@ end
 -- The sheet frame and mirror flag the 2D path would draw for this pose
 -- (same tables as SpriteRenderer). Shared by the billboard pass and the
 -- shadow pass so a walking character's shadow swings its legs too.
-local function frameFor(def, facing, phase, flip)
+local function frameFor(def, facing, phase, flip, yaw)
   local SR = require("src.render.SpriteRenderer")
   local frame, mirror = 0, false
+  
+  -- Adjust facing based on camera yaw
+  if yaw and yaw ~= 0 then
+    local yawDeg = math.deg(yaw)
+    -- Normalize to handle both 180 and -180
+    while yawDeg > 180 do yawDeg = yawDeg - 360 end
+    while yawDeg < -180 do yawDeg = yawDeg + 360 end
+    
+    -- Map camera rotation to facing adjustments with tolerance
+    local map = nil
+    if math.abs(yawDeg - (-90)) < 5 then
+      map = { up = "left", right = "up", down = "right", left = "down" }  -- Camera left
+    elseif math.abs(yawDeg - 90) < 5 then
+      map = { up = "right", right = "down", down = "left", left = "up" }  -- Camera right
+    elseif math.abs(yawDeg - 180) < 5 or math.abs(yawDeg - (-180)) < 5 then
+      map = { up = "down", right = "left", down = "up", left = "right" }  -- Camera back
+    end
+    
+    if map then
+      facing = map[facing] or facing
+    end
+  end
+  
   if (def.frames or 1) > 1 then
     frame = (def.walker and phase == 1) and SR.WALK[facing]
             or SR.STAND[facing]
@@ -217,9 +229,9 @@ end
 -- ground along the sun line (Voxel3D.shadowMatrix). Runs inside
 -- beginShadows, which supplies the translucent black; the texture is only
 -- consulted for its alpha, so no palette work is needed.
-local function drawShadow(sprite, px, py, facing, phase, flip, gh, lift)
+local function drawShadow(sprite, px, py, facing, phase, flip, gh, lift, yaw)
   local def = sprite.def
-  local frame, mirror = frameFor(def, facing, phase, flip)
+  local frame, mirror = frameFor(def, facing, phase, flip, yaw)
   local mesh = SpriteBillboards.shadowQuad(def, frame)
   if not mesh then return end
   Voxel3D.draw(mesh, sprite:resolveImage(),
@@ -234,10 +246,34 @@ end
 -- Shared by the solid draw and the silhouette below, so the two can never
 -- drift apart -- a silhouette standing anywhere but exactly behind the
 -- figure would read as a second character.
-local function billboardMatrix(px, py, y, mirror)
+--
+-- Composition order matters here and is easy to get backwards: Mat4.mul(m,
+-- X) RIGHT-multiplies, so the LAST matrix chained on is the FIRST one
+-- applied to a vertex. Correct billboard behavior is to tip the card back
+-- by pitch in its OWN local frame first, then swing the already-tipped
+-- card around the world +Y axis to face the camera's yaw -- which means
+-- RX must be chained on BEFORE RY (RX ends up rightmost, applied first;
+-- RY ends up left of it, applied second). RY never touches Y (see
+-- Mat4.rotateY -- it only mixes X and Z), so once RX has set the card's
+-- height, swinging it around Y cannot disturb that height at any yaw.
+--
+-- Chaining them the other way around -- RY first, RX second -- lets the
+-- card's local WIDTH leak into its world-space HEIGHT once RX runs
+-- afterward on the already-yawed vertex. That leak is what caused the
+-- skew/upside-down look: negligible near top-down (RX close to identity
+-- there) but large at shallow pitch (15/35) combined with side yaw, where
+-- RX is far from identity. With the order fixed, the single pitch formula
+-- already proven correct for yaw = 0 is correct for every yaw too -- no
+-- per-angle offsets or per-branch mirroring needed.
+local function billboardMatrix(px, py, y, mirror, yaw)
   local Voxel = V.require("VoxelState")
-  local m = Mat4.mul(Mat4.translate(px + 8, y, py + 8),
-                     Mat4.rotateX(Voxel.angle - math.pi / 2))
+  local m = Mat4.translate(px + 8, y, py + 8)
+
+  if yaw and yaw ~= 0 then
+    m = Mat4.mul(m, Mat4.rotateY(yaw))
+  end
+  m = Mat4.mul(m, Mat4.rotateX(Voxel.angle - math.pi / 2))
+
   if mirror then m = Mat4.mul(m, Mat4.scale(-1, 1, 1)) end
   return Mat4.mul(m, Mat4.translate(-8, 0, 0))
 end
@@ -286,7 +322,7 @@ end
 -- `lift` raises the figure off the ground plane (ledge hops arc UP in 3D,
 -- where the 2D path could only slide the sprite north).
 local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
-                          lift)
+                          lift, yaw)
   local def = sprite.def
   local tex = sprite:resolveImage()
   if colors and not def.trueColor then
@@ -299,7 +335,7 @@ local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
   -- LEANS BACK, pivoting at its feet, by exactly the camera's pitch, so
   -- at every tilt level the sprite reads face-on like the flat game.
   -- No camera-tracking yaw: every sprite leans in parallel.
-  local frame, mirror = frameFor(def, facing, phase, flip)
+  local frame, mirror = frameFor(def, facing, phase, flip, yaw)
   local mesh = SpriteBillboards.mesh(def, frame)
   if not mesh then return false end
   -- Camera-ward pull (applied per vertex in the shader, along each
@@ -307,13 +343,12 @@ local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
   -- drift): lets the leaned-back head win against the wall it leans
   -- OVER while a character genuinely BEHIND a building is dozens of
   -- pixels deeper and still loses, so real occlusion works.
-  -- the same card UNLEANED -- and SNUGGED, exactly as the sun stored it
-  -- (castShadows draws this mesh through ShadowMap.snug) -- is where each
-  -- vertex asks whether the light reached it; see ShadowMap.snug for why
-  -- the lookup must match the stored transform to the letter
-  Voxel3D.draw(mesh, tex, billboardMatrix(px, py, y, mirror),
+  -- the same card UNLEANED is what the sun saw (castShadows draws
+  -- exactly this mesh), so that is where each vertex asks whether the
+  -- light reached it -- see Voxel3D.draw
+  Voxel3D.draw(mesh, tex, billboardMatrix(px, py, y, mirror, yaw),
                billboardPull(),
-               ShadowMap.snug(Voxel3D.casterMatrix(px, py, y, mirror)))
+               Voxel3D.casterMatrix(px, py, y, mirror))
   return true
 end
 
@@ -329,9 +364,9 @@ VoxelScene.drawEntity = drawEntity
 -- not. One quad cannot do that, and cannot double-blend into a mottled
 -- patch either. A silhouette is an outline, so an outline is the right
 -- mesh for it.
-local function drawGhost(p)
+local function drawGhost(p, yaw)
   local def = p.sprite.def
-  local frame, mirror = frameFor(def, p.facing, p.phase, p.flip)
+  local frame, mirror = frameFor(def, p.facing, p.phase, p.flip, yaw)
   local mesh = SpriteBillboards.shadowQuad(def, frame)
   if not mesh then return end
   local tex = p.sprite:resolveImage()
@@ -339,7 +374,7 @@ local function drawGhost(p)
     tex = TerrainAtlas.forSprite(def.image, p.colors) or tex
   end
   local y = p.gh + (p.lift or 0)
-  Voxel3D.draw(mesh, tex, billboardMatrix(p.px, p.py, y, mirror),
+  Voxel3D.draw(mesh, tex, billboardMatrix(p.px, p.py, y, mirror, yaw),
                billboardPull())
 end
 
@@ -434,11 +469,24 @@ local function posesOf(state, spriteColors)
   local colors = spriteColors(state.map)
   local posed = {}
   local me = nil
+  -- Gameplay facing (collision/scripts) is always compass-relative and
+  -- must never change; only the FRAME drawn should follow the camera,
+  -- exactly like the flat/tilt billboard passes (see Camera.lua's header
+  -- comment). screenFacing is a no-op (returns compassFacing unchanged)
+  -- whenever the camera is at its default north step, so an unrotated
+  -- camera draws identically to before.
+  local cam = state.camera
+  local function drawnFacing(compassFacing)
+    if cam and cam.screenFacing then
+      return cam:screenFacing(compassFacing)
+    end
+    return compassFacing
+  end
   for _, g in ipairs(state.ghosts or {}) do
     local sprite, vx, vy, facing, phase, flip = g.npc:pose()
     posed[#posed + 1] = {
       sprite = sprite, px = vx + g.ox, py = g.npc.py + g.oy,
-      facing = facing, phase = phase, flip = flip,
+      facing = drawnFacing(facing), phase = phase, flip = flip,
       gh = groundAt(g.map or state.map, g.npc.cellX, g.npc.cellY),
       lift = g.npc.py - vy, colors = spriteColors(g.map or state.map),
     }
@@ -448,7 +496,7 @@ local function posesOf(state, spriteColors)
       local sprite, vx, vy, facing, phase, flip = e:pose()
       posed[#posed + 1] = {
         sprite = sprite, px = vx, py = e.py,
-        facing = facing, phase = phase, flip = flip,
+        facing = drawnFacing(facing), phase = phase, flip = flip,
         gh = groundAt(state.map, e.cellX, e.cellY),
         lift = e.py - vy, colors = colors,
       }
@@ -540,7 +588,7 @@ end
 -- left out on purpose: thousands of tufts would cast a speckle no bigger
 -- than the pixels it lands on, at the cost of the mesh being drawn twice.
 local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
-                           atlasFor)
+                           atlasFor, yaw)
   if not ShadowMap.available() then return end
   local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
   if not ShadowMap.stale(sig) then return end
@@ -553,35 +601,20 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   end
   -- flower billboards live outside the terrain mesh (they draw after the
   -- characters, pulled -- see render), but the sun still sees them: a
-  -- handful of cutouts per meadow, unlike the grass left out below.
-  -- Every thin card from here down is SNUGGED toward the sun along its own
-  -- ray (ShadowMap.snug) so its shadow keeps contact with its feet instead
-  -- of starting a bias-width away.
-  ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map),
-                 ShadowMap.snug(nil))
+  -- handful of cutouts per meadow, unlike the grass left out below
+  ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil)
   for _, nb in ipairs(state.neighbors or {}) do
     ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                   ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
-  end
-  -- authored figures cast too, for the same reason the flowers do: a
-  -- handful of cards per map, and a person with no shadow reads as pasted on
-  eachFigure(state.map, 0, 0, function(mesh, _, caster)
-    ShadowMap.draw(mesh, atlasFor(state.map), ShadowMap.snug(caster))
-  end)
-  for _, nb in ipairs(state.neighbors or {}) do
-    eachFigure(nb.map, nb.ox, nb.oy, function(mesh, _, caster)
-      ShadowMap.draw(mesh, atlasFor(nb.map), ShadowMap.snug(caster))
-    end)
+                   Mat4.translate(nb.ox, 0, nb.oy))
   end
   for _, p in ipairs(posed) do
     local def = p.sprite.def
-    local frame, mirror = frameFor(def, p.facing, p.phase, p.flip)
+    local frame, mirror = frameFor(def, p.facing, p.phase, p.flip, yaw)
     local mesh = SpriteBillboards.shadowQuad(def, frame)
     if mesh then
       ShadowMap.draw(mesh, p.sprite:resolveImage(),
-                     ShadowMap.snug(
-                       Voxel3D.casterMatrix(p.px, p.py, p.gh + (p.lift or 0),
-                                            mirror)))
+                     Voxel3D.casterMatrix(p.px, p.py, p.gh + (p.lift or 0),
+                                          mirror))
     end
   end
 
@@ -598,25 +631,12 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
 
   local cam = state.camera
   local cx, cy = cam.x + vw / 2, cam.y + vh / 2
-
-  -- the hour's light, before anything is cast or drawn: point the shared
-  -- rig at the clock (or at noon, indoors -- a cave at midnight is exactly
-  -- as dark as a cave at noon) and set the tint the scene shader multiplies
-  -- every surface by. A CANOPY map (Viridian Forest) is the case between:
-  -- the rig stays at noon and no sky is painted, but the hour's tint still
-  -- falls through the leaves -- night reaches a forest floor.
-  local outdoor = state.map.def and Map.isOutdoor(state.map.def) or false
-  DayNight.applyRig(outdoor)
-  Voxel3D.tint = DayNight.tint(outdoor or DayNight.isCanopy(state.map))
-  -- and the window glass: the tileset's own panes (found in its art --
-  -- GlassMask), lit after dark. Outdoors only, like everything the clock
-  -- touches, which also keeps any pane-shaped art in an interior tileset
-  -- from picking up a glint.
-  local GlassMask = V.require("GlassMask")
-  Voxel3D.glassMask = outdoor and GlassMask.texture(state.map.tileset) or nil
-  Voxel3D.glassNight = outdoor and DayNight.windowLight() or 0
-  local g = VoxelScene.glintStep(glint, cx, cy)
-  Voxel3D.glassPhase, Voxel3D.glassGlint = g.phase, g.amp
+  -- The same compass camera-rotate angle the flat and tilt ground passes
+  -- spin their canvas by (see src.render.Camera / Renderer.lua). Previously
+  -- unread here entirely, which is why turning the camera had no effect
+  -- in voxel mode: :angle() is 0 whenever the camera hasn't been turned
+  -- (or has settled back to north), so an unrotated camera is unaffected.
+  local yaw = cam.angle and cam:angle() or 0
 
   local function atlasFor(map)
     return TerrainAtlas.forMap(map, modeColors(paletteFor, map))
@@ -630,9 +650,9 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   end
 
   local posed, me = posesOf(state, spriteColors)
-  castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh, atlasFor)
+  castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh, atlasFor, yaw)
 
-  if not Voxel3D.beginScene(w, h, cx, cy, vw, vh, skyFor(state.map)) then
+  if not Voxel3D.beginScene(w, h, cx, cy, vw, vh, skyFor(state.map), nil, yaw) then
     return nil
   end
 
@@ -653,7 +673,7 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
     Voxel3D.beginShadows()
     for _, p in ipairs(posed) do
       drawShadow(p.sprite, p.px, p.py, p.facing, p.phase, p.flip, p.gh,
-                 p.lift)
+                 p.lift, yaw)
     end
     Voxel3D.endShadows()
   end
@@ -672,46 +692,18 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   -- showing in exactly one situation: where the world hides them.
   if me then
     Voxel3D.beginGhost()
-    drawGhost(me)
+    drawGhost(me, yaw)
     Voxel3D.endGhost()
   end
 
-  -- Characters carry no wireframe out here, whatever the V-GRID row says.
-  -- The seams are what makes the WORLD read as built out of voxels, and
-  -- the people walking around in it are the one thing that should read as
-  -- drawn instead -- a grid over a 16x16 sprite lands a line every couple
-  -- of display pixels and turns a face into a mesh. (The battle pass makes
-  -- the opposite call for its own combatants, deliberately: that is a
-  -- staged shot rather than the world being walked around in -- see
-  -- BattleBillboard.)
-  --
-  -- Characters, normally depth-tested: the camera-ward pull inside
+  -- characters, normally depth-tested: the camera-ward pull inside
   -- drawEntity resolves the lean-over-the-wall-in-front case, and a
   -- character genuinely behind a building is far deeper and loses the
   -- test, so buildings and trees really occlude.
   Voxel3D.seams(false)
   for _, p in ipairs(posed) do
     drawEntity(p.sprite, p.px, p.py, p.facing, p.phase, p.flip, p.gh,
-               p.colors, p.lift)
-  end
-  -- back on for everything textured from the atlas again -- figures, grass
-  -- and flowers all sample it, where the mask's coordinates are honest
-  Voxel3D.glass(true)
-  -- Authored figures, alongside the characters and with the same lean and
-  -- the same camera-ward pull -- they ARE characters as far as the artwork
-  -- is concerned, just ones the tileset draws instead of a sprite sheet.
-  -- Drawn after the walkers so a player standing in front of the couch
-  -- wins the overlap, which is the order the flat game draws them in.
-  local figPull = billboardPull()
-  eachFigure(state.map, 0, 0, function(mesh, model, caster)
-    Voxel3D.draw(mesh, atlasFor(state.map), model, figPull,
-                 ShadowMap.snug(caster))
-  end)
-  for _, nb in ipairs(state.neighbors or {}) do
-    eachFigure(nb.map, nb.ox, nb.oy, function(mesh, model, caster)
-      Voxel3D.draw(mesh, atlasFor(nb.map), model, figPull,
-                   ShadowMap.snug(caster))
-    end)
+               p.colors, p.lift, yaw)
   end
   -- and the seams are back on for the terrain art that follows: grass and
   -- flowers are the world's own drawing, not people
@@ -743,11 +735,10 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   -- flowers are snugged casters too, so they read their own shadowing
   -- through the same snugged transform the sun stored them with
   Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil,
-               fpull, ShadowMap.snug(nil))
+               fpull)
   for _, nb in ipairs(state.neighbors or {}) do
     Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                 Mat4.translate(nb.ox, 0, nb.oy), fpull,
-                 ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+                 Mat4.translate(nb.ox, 0, nb.oy), fpull)
   end
 
   return Voxel3D.endScene()

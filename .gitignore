@@ -5,3 +5,6 @@ __pycache__/
 
 # agent worktrees and local scratch
 .claude/
+
+# Visual Studio cache
+.vs/

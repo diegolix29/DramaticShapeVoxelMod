@@ -30,8 +30,6 @@ local Voxel = V.require("VoxelState")
 local ShadowMap = V.require("ShadowMap")
 local VoxelGrid = V.require("VoxelGrid")
 local WorldCurve = V.require("WorldCurve")
-local Sky = V.require("Sky")
-local DayNight = V.require("DayNight")
 local GlassMask = V.require("GlassMask")
 
 local Voxel3D = {}
@@ -135,6 +133,10 @@ local SHADER = [[
   uniform float sunDark;      // how far into black a shadow goes; 0 = off
   uniform float sunBias;
   uniform vec2 sunTexel;
+  uniform Image glassMask;    // window panes, white on glass texels
+  uniform float glassNight;   // lamp brightness 0..1, replaces sun at night
+  uniform float glassGlint;  // reflection sweep strength, moves with camera
+  uniform float glassEnabled; // 1 = apply glass effect, 0 = skip
 
   // the two-channel pack ShadowMap writes: high byte, then low
   float sunDepth(vec2 uv) {
@@ -203,13 +205,6 @@ local SHADER = [[
 
   uniform vec3 ghostColor;    // the flat silhouette colour
   uniform float ghost;        // 0 = shade normally, 1 = flatten to it
-  uniform vec3 dayTint;       // the hour's light on the world; 1,1,1 = noon
-  uniform Image glassMask;    // opaque where the atlas texel is window glass
-  uniform vec2 glassSize;     // the mask's dimensions: tc -> atlas texels
-  uniform float glassNight;   // 0 = daylight .. 1 = the lamps are on
-  uniform float glassPhase;   // the glint's phase: advances with TRAVEL
-  uniform float glassGlint;   // and its strength: 0 while standing still
-  uniform float glassOn;      // 0 for sprite-sheet draws (see Voxel3D.glass)
 
   vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
     vec4 p = Texel(tex, tc);
@@ -217,43 +212,25 @@ local SHADER = [[
     // blending keeps those texels out of the depth buffer, so a model never
     // carves a transparent hole out of whatever stands behind it
     if (p.a < 0.5) discard;
-    // the hour's tint multiplies like the sun terms do: it is LIGHT, the
-    // same warm or moonlit cast on every surface, not a palette swap
-    vec3 rgb = p.rgb * vShade * sunlight(vSun) * dayTint;
+    vec3 rgb = p.rgb * vShade * sunlight(vSun);
 #ifdef VOXEL_GRID
     // darken what is there rather than painting a colour, so a seam across
     // dark grass and one across a white roof each stay in their own palette
     rgb *= 1.0 - gridDark * voxelSeam(vGrid);
 #endif
-    // WINDOW GLASS, marked per atlas texel by the mask (see GlassMask).
-    // By day a thin diagonal glint crosses the panes WHILE THE VIEW MOVES
-    // -- the phase is fed by the camera's own travel and the strength dies
-    // within a beat of standing still, because a reflection is something
-    // the viewpoint does: still camera, still glass. It lifts the texel
-    // toward sky-white and leaves the art visible through it. After dark
-    // the pane is LIT: the texel's own shine pattern carried into a warm
-    // lamp colour, replacing the shaded answer above -- so a lit window
-    // ignores the sun, every shadow and the hour's tint, exactly as a
-    // window with a lamp behind it does.
-    // glassOn gates the whole thing per DRAW: the mask is shaped like the
-    // tileset atlas, and only meshes textured FROM that atlas may consult
-    // it -- a character samples its own sprite sheet, whose coordinates
-    // land on the mask's pane rectangles by accident and would stripe the
-    // cast with lamplight at night.
-    float glass = Texel(glassMask, tc).a * glassOn;
-    if (glass > 0.0) {
-      // the sweep lives in the PANE's own space (atlas texels), not the
-      // screen's: a pattern anchored to the screen has the world sliding
-      // through it at zoom speed whenever the camera pans, which strobed --
-      // worst where the pan and the phase ran opposite ways. Anchored to
-      // the glass, panning moves nothing; only the phase does, a fraction
-      // of a texel per step, the same in every walking direction.
-      float sweep = sin(tc.x * glassSize.x * 0.8 - glassPhase);
-      float glint = pow(max(sweep, 0.0), 20.0) * 0.55 * glassGlint;
-      vec3 pane = mix(rgb, vec3(0.93, 0.97, 1.0), glint * glass);
-      float shine = dot(p.rgb, vec3(0.299, 0.587, 0.114));
-      vec3 lamp = vec3(1.0, 0.84, 0.5) * (0.5 + 0.55 * shine);
-      rgb = mix(pane, lamp, glassNight * glass);
+    // window glass: when enabled, sample the mask and apply day/night effects
+    if (glassEnabled > 0.5) {
+      vec4 mask = Texel(glassMask, tc);
+      if (mask.r > 0.5) {
+        // this fragment is glass: apply glint by day, lamp light by night
+        float glint = glassGlint * (sin(tc.x * 10.0 + tc.y * 10.0) * 0.5 + 0.5);
+        rgb = mix(rgb, vec3(1.0), glint * 0.3);
+        if (glassNight > 0.0) {
+          // lit window: warm lamp colour, ignores sun and shadow
+          vec3 lamp = vec3(1.0, 0.9, 0.7) * glassNight;
+          rgb = mix(rgb, lamp * p.rgb, glassNight);
+        }
+      }
     }
     // The hidden player is a SHAPE, not a dimmed picture of itself. Tinting
     // through `color` could only multiply the sprite's own pixels, which
@@ -284,6 +261,13 @@ local activeShader = nil      -- the variant this pass bound
 local slots = {}
 local canvas, canvasW, canvasH = nil, 0, 0   -- the slot this pass bound
 local active = false
+
+-- Glass and seams state, set by the scene and read by the shader
+Voxel3D.glassMask = nil
+Voxel3D.glassNight = 0
+Voxel3D.glassGlint = 0
+Voxel3D.glassEnabled = true
+Voxel3D.seamsEnabled = true
 
 local IDENTITY = Mat4.identity()
 
@@ -380,15 +364,19 @@ end
 Voxel3D.camera = nil
 
 -- View and projection for a `vw` x `vh` world-pixel view centred on
--- (cx, cy) in world pixels. Returns the combined matrix.
-function Voxel3D.viewProjection(cx, cy, vw, vh)
+-- (cx, cy) in world pixels. `yaw` (radians, defaults to 0) is the
+-- compass camera-rotate angle from src.render.Camera -- the same value
+-- the flat and tilt ground passes spin their canvas by. It only affects
+-- the free-roam orbit below (a placed camera, e.g. a battle rig, always
+-- ignores it -- it already has its own explicit yaw baked into eye/focus).
+-- Returns the combined matrix.
+function Voxel3D.viewProjection(cx, cy, vw, vh, yaw)
+  -- Store yaw for use in Y-axis flip logic
+  Voxel3D.currentYaw = yaw
   local cam = Voxel3D.camera
   if cam then
     local eye, focus = cam.eye, cam.focus
     Voxel3D.eye = eye
-    -- kept beside the eye for horizonY: where the sky's pale end goes is a
-    -- question about which way this camera looks, and only these two answer it
-    Voxel3D.focus = focus
     local dx = eye[1] - focus[1]
     local dy = eye[2] - focus[2]
     local dz = eye[3] - focus[3]
@@ -411,14 +399,30 @@ function Voxel3D.viewProjection(cx, cy, vw, vh)
   local fov = 2 * math.atan(1 / (2 * focal))
 
   local focus = { cx, 0, cy }
-  local eye = { cx, dist * math.cos(a), cy + dist * math.sin(a) }
+  -- Without yaw the eye sits directly above/south of the focus (offset
+  -- purely in Y/Z: (0, dist*cos(a), dist*sin(a))). To turn the compass
+  -- camera-rotate (see src.render.Camera) into a real orbit, rotate that
+  -- offset -- and the up vector below, the same way -- around the
+  -- vertical (+Y) axis by yaw. yaw = 0 reduces both back to the original
+  -- formulas exactly, so an unrotated camera renders byte-for-byte as
+  -- before.
+  -- NOTE: the sign here is a best guess at matching the flat/tilt ground
+  -- passes' rotation direction (see Renderer.lua / Camera.lua), not
+  -- something verified on a real display. If a turn ever spins this 3D
+  -- view the opposite way from the flat/tilt ones, negate `yaw` below --
+  -- nothing else needs to change.
+  yaw = yaw or 0
+  local cosY, sinY = math.cos(yaw), math.sin(yaw)
+  local offY, offZ = dist * math.cos(a), dist * math.sin(a)
+  local eyeOffX, eyeOffZ = -offZ * -sinY, offZ * cosY
+  local eye = { cx + eyeOffX, offY, cy + eyeOffZ }
   -- exposed for camera-facing billboards (VoxelScene yaws sprites at it)
   Voxel3D.eye = eye
-  Voxel3D.focus = focus
-  -- perpendicular to the view direction in the YZ plane: north is screen-up
-  -- when looking straight down, +Y is screen-up when looking level. Never
-  -- parallel to the view direction, so there is no degenerate a = 0 case.
-  local up = { 0, math.sin(a), -math.cos(a) }
+  -- perpendicular to the view direction, rotated the same way as the eye
+  -- offset so the horizon stays level as the view turns. Never parallel
+  -- to the view direction, so there is no degenerate a = 0 case.
+  local upZ = -math.cos(a)
+  local up = { upZ * sinY, math.sin(a), upZ * cosY }
 
   local proj = Mat4.perspective(fov, vw / vh,
                                 math.max(1, dist * 0.05), dist * 4 + 4096)
@@ -432,92 +436,6 @@ function Voxel3D.viewProjection(cx, cy, vw, vh)
   return Mat4.mul(proj, Mat4.lookAt(eye, focus, up))
 end
 
--- ------- the horizon
---
--- Where the ground plane's vanishing line lands, in canvas pixels down from the
--- top edge, or nil when this camera has no horizon to find.
---
--- Not a fraction picked by eye. A direction ALONG the ground is a point at
--- infinity, and putting one through the same matrix the geometry is drawn with
--- gives the line every ground plane in the scene converges on -- so the sky's
--- pale end meets the horizon at any pitch, fov, window shape or zoom, and rides
--- the camera tween instead of having to be retuned against it.
---
--- The world CURVE is not in it, and cannot be: it bends distant ground down in
--- the vertex shader, so the ground's apparent edge sits BELOW this line by
--- however much the bend took. What shows in between is the haze the sky's fill
--- already is, which is what a curved-away horizon should look like.
---
--- nil in two cases, both meaning "no horizon in this frame": a camera looking
--- straight down, whose forward direction has no horizontal part to send to
--- infinity, and one whose vanishing line is behind it.
-function Voxel3D.horizonY(h)
-  local m, eye, focus = Voxel3D.vp, Voxel3D.eye, Voxel3D.focus
-  if not (m and eye and focus and h and h > 0) then return nil end
-  local dx = focus[1] - eye[1]
-  local dz = focus[3] - eye[3]
-  local len = math.sqrt(dx * dx + dz * dz)
-  if len < 1e-6 then return nil end
-  dx, dz = dx / len, dz / len
-  -- a DIRECTION, so its w is zero and the matrix's translation column drops
-  -- out; the clip-space Y flip is already baked into m, so this comes out in
-  -- canvas coordinates rather than needing one
-  local y = m[5] * dx + m[7] * dz
-  local w = m[13] * dx + m[15] * dz
-  if w <= 1e-6 then return nil end
-  return (y / w * 0.5 + 0.5) * h
-end
-
--- ------- the hour's light
---
--- What the scene shader multiplies every surface by (see dayTint in the
--- shader). Set per pass by whoever knows what map is being drawn --
--- VoxelScene for free-roam, BattleScene for the arena -- because "is this
--- outdoors" is the map's question, not this pass's. Neutral until somebody
--- answers it, so a caller that never does draws exactly what it always drew.
-Voxel3D.tint = { 1, 1, 1 }
-
--- The window-glass pass, set the same way and for the same reason: the
--- MASK belongs to the map's tileset (GlassMask.texture) and how lit the
--- panes are belongs to the hour and to being outdoors at all
--- (DayNight.windowLight). nil / 0 -- the defaults -- draw no glass effect.
-Voxel3D.glassMask = nil
-Voxel3D.glassNight = 0
-
--- the glint, fed by the camera's TRAVEL rather than by a clock (see
--- VoxelScene.glintStep): the phase is radians already wrapped to 2pi, and
--- the strength is 0 whenever the view has been still for a beat
-Voxel3D.glassPhase = 0
-Voxel3D.glassGlint = 0
-
--- The sun or moon disc's place on this camera's canvas, or nil when the
--- body is set, on the southern half of the sky, or behind the camera.
---
--- The direction comes from DayNight (true bearing, squashed elevation) and
--- goes through the SAME matrix the geometry is drawn with, as a point at
--- infinity -- exactly how horizonY finds the vanishing line. So the disc's
--- azimuth is honest: it stands over the point on the horizon its shadows
--- point away from, at every pitch, fov, window shape and zoom.
---
--- Must run after beginScene has set Voxel3D.vp for this frame's camera.
-function Voxel3D.skyBody(w, h)
-  local m = Voxel3D.vp
-  local b = m and DayNight.body()
-  if not b then return nil end
-  local x = m[1] * b.dx + m[2] * b.dy + m[3] * b.dz
-  local y = m[5] * b.dx + m[6] * b.dy + m[7] * b.dz
-  local ww = m[13] * b.dx + m[14] * b.dy + m[15] * b.dz
-  if ww <= 1e-6 then return nil end
-  local amt, color = DayNight.glow()
-  return {
-    x = (x / ww * 0.5 + 0.5) * w,
-    y = (y / ww * 0.5 + 0.5) * h,
-    moon = b.moon,
-    glowAmt = amt,
-    glowColor = color,
-  }
-end
-
 -- ----------------------------------------------------------------- scene --
 
 -- Begin the 3D pass into a `w` x `h` pixel canvas centred on world
@@ -528,7 +446,7 @@ end
 -- void transparent, which is what every rung below it wants.
 -- `slot` names which cached canvas to render into (see `slots` above);
 -- omitted is the free-roam world pass.
-function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
+function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot, yaw)
   -- the wireframe variant when the player has it on AND it built; either
   -- answer falls through to the plain scene rather than to no scene
   local grid = VoxelGrid.enabled()
@@ -558,23 +476,8 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
     pcall(love.graphics.setCanvas)
     return false
   end
-  -- Ahead of the clear, because the sky's bands are placed off the ground
-  -- plane's vanishing line and that is a property of this matrix.
-  Voxel3D.vp = Voxel3D.viewProjection(cx, cy, vw, vh)
   if sky then
     love.graphics.clear(sky[1], sky[2], sky[3], sky[4] or 1, true, true)
-    -- The sky goes down here, in the one window in this function where a
-    -- rectangle is just a rectangle: the depth mode and the scene shader are
-    -- both set below. Sky.paint puts them aside anyway -- beginScene is not the
-    -- only thing that has ever left a shader bound.
-    --
-    -- w / vw is this frame's pixels per WORLD pixel, which is the size a diorama
-    -- pixel is on screen: the sky's dither grid is cut to that, so its squares
-    -- are the same size as the world's own and follow every resize and zoom.
-    -- The banded sky also hangs the hour's sun or moon (skyBody projects it
-    -- through this very camera); a flat sky has no bands and hangs nothing.
-    Sky.paint(w, h, sky, Voxel3D.horizonY(h), w / math.max(1, vw or w),
-              sky.bands and Voxel3D.skyBody(w, h) or nil)
   else
     love.graphics.clear(0, 0, 0, 0, true, true)
   end
@@ -585,6 +488,7 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
   love.graphics.setMeshCullMode("none")
   love.graphics.setShader(sh)
   love.graphics.setColor(1, 1, 1, 1)
+  Voxel3D.vp = Voxel3D.viewProjection(cx, cy, vw, vh, yaw)
   pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
   pcall(sh.send, sh, "eye", Voxel3D.eye)
   -- the sun's frame, filled by ShadowMap just before this pass opened.
@@ -599,8 +503,8 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
   local texel = 1 / ShadowMap.res
   pcall(sh.send, sh, "sunTexel", { texel, texel })
   if grid then
-    pcall(sh.send, sh, "gridDark", VoxelGrid.DARK)
-    pcall(sh.send, sh, "gridWidth", VoxelGrid.WIDTH)
+    pcall(sh.send, sh, "gridDark", Voxel3D.seamsEnabled and VoxelGrid.DARK or 0)
+    pcall(sh.send, sh, "gridWidth", Voxel3D.seamsEnabled and VoxelGrid.WIDTH or 0)
   end
   -- ordinary shading until the silhouette pass asks for otherwise. Sent
   -- every frame rather than once, because a scene that opened mid-ghost --
@@ -608,22 +512,11 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
   -- start out flattening everything it drew.
   pcall(sh.send, sh, "ghost", 0)
   pcall(sh.send, sh, "ghostColor", Voxel3D.GHOST_COLOR)
-  -- the hour's light, as the caller last set it (see Voxel3D.tint)
-  pcall(sh.send, sh, "dayTint", Voxel3D.tint or { 1, 1, 1 })
-  -- the window glass: the tileset's mask (or the blank -- the sampler is
-  -- declared either way, and unbound is a driver-dependent crash), how lit
-  -- the panes are, and the movement-fed glint as the caller last set it
-  local mask = Voxel3D.glassMask or GlassMask.blank()
-  if mask then
-    pcall(sh.send, sh, "glassMask", mask)
-    local ok, mw, mh = pcall(mask.getDimensions, mask)
-    pcall(sh.send, sh, "glassSize", { ok and mw or 1, ok and mh or 1 })
-  end
+  -- glass uniforms, sent every frame to keep the state consistent
+  pcall(sh.send, sh, "glassMask", Voxel3D.glassMask or GlassMask.blank())
   pcall(sh.send, sh, "glassNight", Voxel3D.glassNight or 0)
-  pcall(sh.send, sh, "glassPhase", Voxel3D.glassPhase or 0)
   pcall(sh.send, sh, "glassGlint", Voxel3D.glassGlint or 0)
-  -- on until a sprite pass says otherwise, reset per frame like `ghost`
-  pcall(sh.send, sh, "glassOn", 1)
+  pcall(sh.send, sh, "glassEnabled", Voxel3D.glassEnabled and 1 or 0)
   -- the curved world bends about the camera's focus, so the horizon keeps
   -- a fixed distance ahead of the player rather than sitting on the map.
   -- A placed camera may decline it outright (Voxel3D.camera.curve = 0).
@@ -648,6 +541,34 @@ function Voxel3D.depth(mode)
   if not active then return end
   pcall(love.graphics.setDepthMode, mode == "always" and "always" or "lequal",
         true)
+end
+
+-- Window glass control. `enabled` true applies the glass mask (set by the
+-- scene as Voxel3D.glassMask), false disables it for sprite sheets and
+-- other content whose texture coordinates don't align with the tileset atlas.
+function Voxel3D.glass(enabled)
+  if not active then return end
+  -- The glass state is tracked and sent to the shader as uniforms
+  Voxel3D.glassEnabled = enabled and true or false
+  if activeShader then
+    pcall(activeShader.send, activeShader, "glassMask", Voxel3D.glassMask or GlassMask.blank())
+    pcall(activeShader.send, activeShader, "glassNight", Voxel3D.glassNight or 0)
+    pcall(activeShader.send, activeShader, "glassGlint", Voxel3D.glassGlint or 0)
+    pcall(activeShader.send, activeShader, "glassEnabled", Voxel3D.glassEnabled and 1 or 0)
+  end
+end
+
+-- Voxel grid/seams control. `enabled` true applies the voxel wireframe
+-- (built into the shader variant), false disables it for sprite sheets and
+-- other content that isn't on the voxel grid.
+function Voxel3D.seams(enabled)
+  if not active then return end
+  -- The seams state controls whether the grid effect is applied
+  Voxel3D.seamsEnabled = enabled and true or false
+  if activeShader then
+    pcall(activeShader.send, activeShader, "gridDark", Voxel3D.seamsEnabled and VoxelGrid.DARK or 0)
+    pcall(activeShader.send, activeShader, "gridWidth", Voxel3D.seamsEnabled and VoxelGrid.WIDTH or 0)
+  end
 end
 
 -- ------------------------------------------------ the player's own ghost --
@@ -718,44 +639,6 @@ function Voxel3D.flatten(color, amount)
   else
     pcall(sh.send, sh, "ghost", 0)
   end
-end
-
--- Whether what is drawn next carries the voxel wireframe. false for the
--- length of a draw, true to put it back.
---
--- The wireframe reads a mesh's OWN model space and darkens its integer
--- planes (see VoxelGrid), which is only a wireframe because every mesh in
--- this mode is built ONE UNIT PER VOXEL: terrain in world pixels, a
--- character card in the sprite's own pixels. A mesh whose model space does
--- not mean that gets no wireframe out of the same shader -- it gets
--- whichever of its integer planes happen to fall inside it, which is a
--- stray line rather than a seam.
---
--- So this is not a style switch. It is how a mesh that is not on the voxel
--- grid says so, and the alternative -- rescaling such a mesh until its
--- units happen to be voxels -- would change what it IS to satisfy a
--- shading pass.
---
--- Sent rather than branched because the plain scene shader has no such
--- uniform, and the send simply does not take there -- which is right: with
--- no wireframe compiled in there is nothing to suppress.
-function Voxel3D.seams(on)
-  if not (active and activeShader) then return end
-  pcall(activeShader.send, activeShader, "gridDark",
-        on and VoxelGrid.DARK or 0)
-end
-
--- Whether what is drawn next may consult the glass mask. false for the
--- length of a sprite-sheet pass, true to put it back.
---
--- Same shape as seams(), for the same reason: the mask means "this ATLAS
--- texel is window glass", so it is only an answer for meshes textured from
--- the tileset atlas. A sprite sheet's coordinates land wherever they land
--- on it, and at night that painted lamplight stripes down whoever was
--- standing in the wrong part of their own sheet.
-function Voxel3D.glass(on)
-  if not (active and activeShader) then return end
-  pcall(activeShader.send, activeShader, "glassOn", on and 1 or 0)
 end
 
 function Voxel3D.endGhost()
@@ -941,10 +824,6 @@ function Voxel3D.invalidate()
   end
   canvas, canvasW, canvasH = nil, 0, 0
   ShadowMap.invalidate()
-  -- the sky is part of this pass and holds a shader of its own
-  Sky.invalidate()
-  -- and the glass masks are textures of this context too
-  GlassMask.invalidate()
 end
 
 return Voxel3D
