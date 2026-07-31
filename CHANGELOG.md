@@ -4,6 +4,19 @@
 
 ### Added
 
+- **DRAW DIST, a new performance option: NEAR / MILD / FAR draw distance.**
+  Controls how many adjacent maps (neighbors) are rendered, which significantly
+  affects performance on low-end PCs and mobile devices. NEAR renders only the
+  current map (0 neighbors) for best performance, MILD renders 2 neighbors for
+  balanced quality, and FAR renders 4 neighbors for maximum visual quality.
+  Accessible via hotkey 9 (default, rebindable) or the DRAW DIST options row.
+
+- **Hotkey system integration: All mod hotkeys are now properly registered through
+  the game's hotkey system and can be rebound through the hotkey bindings menu.**
+  V-GRID, V-CURVE, 3D-BTL, and DRAW DIST hotkeys use the game's mod.hotkey.register
+  API for full rebinding support, while VOXEL and T-SHIFT continue to use the
+  engine's pipeline hotkey system.
+
 - **BACK SPRITES, a new row under 3D-BTL: your own Pokémon stays on the battle menu.**
   The staged shot stands both mons on the map, which is the mode's whole claim
   -- and it costs the framing Gen 1 is most recognisable by: your own Pokémon,

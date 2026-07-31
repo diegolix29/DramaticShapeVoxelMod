@@ -25,15 +25,16 @@ exactly where the fight found them when it ends.
 ## Controls
 
 Every key is free-roam only, and each one is also a row on the OPTIONS
-menu.
+menu. All hotkeys can be rebound through the game's hotkey bindings menu.
 
 | control | does |
 | --- | --- |
-| `3`, or the **VOXEL** options row | OFF → 15 → 35 → 50 → 75 → OFF (camera pitch) |
-| `5`, or the **V-GRID** options row | OFF / ON — a one-pixel wireframe on every voxel |
-| `6`, or the **T-SHIFT** options row | OFF → 1 → 2 → 3 → OFF (miniature blur) |
-| `7`, or the **V-CURVE** options row | OFF → 1 → 2 → 3 — bend the world over the horizon |
-| `8`, or the **3D-BTL** options row | ON / OFF — fight on the map instead of on a white field |
+| `3` (default), or the **VOXEL** options row | OFF → 15 → 35 → 50 → 75 → OFF (camera pitch) |
+| `5` (default), or the **V-GRID** options row | OFF / ON — a one-pixel wireframe on every voxel |
+| `6` (default), or the **T-SHIFT** options row | OFF → 1 → 2 → 3 → OFF (miniature blur) |
+| `7` (default), or the **V-CURVE** options row | OFF → 1 → 2 → 3 — bend the world over the horizon |
+| `8` (default), or the **3D-BTL** options row | ON / OFF — fight on the map instead of on a white field |
+| `9` (default), or the **DRAW DIST** options row | NEAR → MILD → FAR → NEAR — how many adjacent maps to render (0/2/4 neighbors for performance/quality) |
 | the **BACK SPRITES** options row | OFF / ON — keep your own Pokémon on the battle menu, seen from behind in its classic slot, instead of standing it on the map; the foe is still out there. Only on the menu while **3D-BTL** is on, because it decides nothing without it |
 | the **DAYTIME** options row | SYNC / DAY / NIGHT / DUSK / DAWN / CYCLE — what time it is outdoors, on the diorama *and* on the flat 2D world; held at SYNC (and off the menu) while VOXEL is FULL |
 

@@ -22,6 +22,7 @@ local TerrainAtlas = V.require("TerrainAtlas")
 local Voxel = V.require("VoxelState")
 local Sky = V.require("Sky")
 local DayNight = V.require("DayNight")
+local DrawDistance = V.require("DrawDistance")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 
@@ -408,10 +409,18 @@ function VoxelScene.prefetch(state)
   -- ever visited.
   local liveKey = state.map.id
   local live = { [state.map.id] = true }
-  for _, nb in ipairs(state.neighbors or {}) do
-    live[nb.map.id] = true
-    liveKey = liveKey .. "|" .. nb.map.id
+  
+  -- Limit neighbors based on DrawDistance setting for performance
+  local neighborLimit = DrawDistance.neighborLimit()
+  local limitedNeighbors = {}
+  for i, nb in ipairs(state.neighbors or {}) do
+    if i <= neighborLimit then
+      limitedNeighbors[#limitedNeighbors + 1] = nb
+      live[nb.map.id] = true
+      liveKey = liveKey .. "|" .. nb.map.id
+    end
   end
+  
   if liveKey ~= lastLiveKey then
     lastLiveKey = liveKey
     ChunkMesher.setLive(live)
@@ -423,7 +432,7 @@ function VoxelScene.prefetch(state)
   -- masks: where connected neighbour BODIES sit, so the border ring is
   -- suppressed under them (see runGeometry)
   local masks = {}
-  for _, nb in ipairs(state.neighbors or {}) do
+  for _, nb in ipairs(limitedNeighbors) do
     masks[#masks + 1] = { nb.ox, nb.oy,
                           nb.ox + nb.map.def.width * 32,
                           nb.oy + nb.map.def.height * 32 }
@@ -444,7 +453,7 @@ function VoxelScene.prefetch(state)
     terrain = ChunkMesher.peek(state.map, true)
   end
   local nbMesh = {}
-  for i, nb in ipairs(state.neighbors or {}) do
+  for i, nb in ipairs(limitedNeighbors) do
     nbMesh[i] = ChunkMesher.request(nb.map, true)
                 or ChunkMesher.peek(nb.map, false)
   end
@@ -588,7 +597,7 @@ end
 -- left out on purpose: thousands of tufts would cast a speckle no bigger
 -- than the pixels it lands on, at the cost of the mesh being drawn twice.
 local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
-                           atlasFor, yaw)
+                           atlasFor, yaw, neighborLimit)
   if not ShadowMap.available() then return end
   local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
   if not ShadowMap.stale(sig) then return end
@@ -596,16 +605,20 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
 
   ShadowMap.draw(terrain, atlasFor(state.map), nil)
   for i, nb in ipairs(state.neighbors or {}) do
-    ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
-                   Mat4.translate(nb.ox, 0, nb.oy))
+    if i <= neighborLimit and nbMesh[i] then
+      ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+    end
   end
   -- flower billboards live outside the terrain mesh (they draw after the
   -- characters, pulled -- see render), but the sun still sees them: a
   -- handful of cutouts per meadow, unlike the grass left out below
   ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil)
-  for _, nb in ipairs(state.neighbors or {}) do
-    ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                   Mat4.translate(nb.ox, 0, nb.oy))
+  for i, nb in ipairs(state.neighbors or {}) do
+    if i <= neighborLimit then
+      ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+    end
   end
   for _, p in ipairs(posed) do
     local def = p.sprite.def
@@ -650,16 +663,21 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   end
 
   local posed, me = posesOf(state, spriteColors)
-  castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh, atlasFor, yaw)
+  -- Calculate neighbor limit for shadow pass
+  local neighborLimit = DrawDistance.neighborLimit()
+  castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh, atlasFor, yaw, neighborLimit)
 
   if not Voxel3D.beginScene(w, h, cx, cy, vw, vh, skyFor(state.map), nil, yaw) then
     return nil
   end
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
+  local neighborLimit = DrawDistance.neighborLimit()
   for i, nb in ipairs(state.neighbors or {}) do
-    Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
-                 Mat4.translate(nb.ox, 0, nb.oy))
+    if i <= neighborLimit then
+      Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy))
+    end
   end
 
   -- Without a shadow map (headless, or a driver that could not make the
@@ -717,9 +735,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   local Voxel = V.require("VoxelState")
   local pull = VoxelScene.pull(math.max(Voxel.angle, 0.05))
   Voxel3D.draw(ChunkMesher.grass(state.map), atlasFor(state.map), nil, pull)
-  for _, nb in ipairs(state.neighbors or {}) do
-    Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
-                 Mat4.translate(nb.ox, 0, nb.oy), pull)
+  for i, nb in ipairs(state.neighbors or {}) do
+    if i <= neighborLimit then
+      Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy), pull)
+    end
   end
   -- flower billboards: pulled like the characters and the grass, MINUS
   -- the depth of 8 world pixels along the view (8 sin a -- the camera
@@ -736,9 +756,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   -- through the same snugged transform the sun stored them with
   Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil,
                fpull)
-  for _, nb in ipairs(state.neighbors or {}) do
-    Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                 Mat4.translate(nb.ox, 0, nb.oy), fpull)
+  for i, nb in ipairs(state.neighbors or {}) do
+    if i <= neighborLimit then
+      Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy), fpull)
+    end
   end
 
   return Voxel3D.endScene()

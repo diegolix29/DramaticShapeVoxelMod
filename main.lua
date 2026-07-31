@@ -77,6 +77,7 @@ local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
 local VoxelGrid = V.require("VoxelGrid")
 local WorldCurve = V.require("WorldCurve")
+local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local BattleExit = V.require("BattleExit")
 local DayNight = V.require("DayNight")
@@ -332,6 +333,10 @@ local SETTINGS = {
   { VoxelGrid.setting, "One-pixel wireframe along every voxel edge." },
   { WorldCurve.setting,
     "Bend the world down over the horizon, Animal Crossing style." },
+  { DrawDistance.setting,
+    "How many adjacent maps to render: NEAR (0 neighbors) for best performance "
+    .. "on low-end devices, MILD (2 neighbors) for balanced quality, or FAR "
+    .. "(4 neighbors) for maximum view distance and visual quality." },
   -- `full` marks a row FULL does not take away. FULL owns the diorama's own
   -- knobs; what a battle is drawn over, and how it is framed, are not that.
   { OverworldBattle.setting,
@@ -361,112 +366,62 @@ mod.options:define(schema)
 
 -- ------- this mod's hotkeys
 --
---   3  VOXEL    cycle the camera ladder      (was 6; skips FULL)
---   5  V-GRID   toggle the wireframe         (new)
---   6  T-SHIFT  cycle the blur ladder        (was 9)
---   7  V-CURVE  cycle the horizon bend       (new)
---   8  3D-BTL   toggle overworld battles     (new)
---
--- Only 6 arrives by the documented route. Game:keypressed answers the
--- engine's own display keys FIRST and returns -- 2 COLORS, 3 TILT, 4 ZOOM,
--- 5 GBC FX -- and only then offers the key to Pipelines.hotkey, expressly
--- so "a pipeline can never shadow one" (Schemas, render_pipelines.hotkey).
--- 3 and 5 are two of those, and 7 and 8 belong to plain mod settings that
--- own no pass and so have no registry to claim a key from at all.
---
--- So this wraps Game:keypressed. It is the invasive option and it is the
--- only one: polling the keyboard in update() would fire alongside the
--- engine's handler rather than instead of it, so 3 would cycle this mode
--- AND the engine's TILT on the same press.
---
--- Consequences worth being explicit about: while this mod is enabled, TILT
--- (3) and GBC FX (5) are unreachable by key -- and unreachable on the OPTIONS
--- menu too, where both rows are taken away and both values held at zero (see
--- pinEngineFx). Nothing is being hidden that still does something: TILT is the
--- flat fake of what this mode does for real, the registry already forces it
--- off whenever a world pipeline takes the pass, and GBC FX is a full-screen
--- present pass over the top of the diorama. Uninstalling puts both back.
---
--- Everything the engine does around a pipeline hotkey has to happen here
--- too, so the work is DELEGATED rather than reimplemented: Pipelines.hotkey
--- applies its own gate and ladder, and the three lines after it are the
--- engine's own (syncOptions, the tilt exclusion, writeOptions).
+-- Register mod hotkeys using the game's hotkey system for proper rebinding support
+mod.hotkey.register("voxelGrid", "V-GRID", "5")
+mod.hotkey.register("worldCurve", "V-CURVE", "7")
+mod.hotkey.register("overworldBattle", "3D-BTL", "8")
+mod.hotkey.register("drawDistance", "DRAW DIST", "9")
 
-local HOTKEYS = {
-  ["3"] = "pipeline",           -- voxel, by its declared hotkey
-  ["6"] = "pipeline",           -- tiltshift, likewise
-  ["5"] = VoxelGrid.setting,
-  ["7"] = WorldCurve.setting,
-  ["8"] = OverworldBattle.setting,
-}
-
-do
-  local Game = require("src.core.Game")
+-- Handle mod hotkeys through the game.hotkey hook
+mod.hooks:wrap("game.hotkey", function(action, game)
   local Pipelines = require("src.render.Pipelines")
-  local inner = Game.keypressed
-
-  function Game:keypressed(key)
-    local claim = HOTKEYS[key]
-    local top = self.stack and self.stack:top()
-    -- A screen with its own key handler gets the key first, exactly as the
-    -- engine's first branch does: typing a nickname must not toggle a
-    -- render mode. Only free-roam presses are ours to take.
-    if claim and not (top and top.onKeyPressed) then
-      if claim == "pipeline" then
-        -- 3 walks the ANGLE rungs and steps over FULL (Voxel.HOTKEY_ORDER),
-        -- so the registry's plain "advance one and wrap" is not what it
-        -- wants; 6 still is. The gate is the registry's own either way.
-        local stepped = false
-        if key == "3" then
-          if Pipelines.canToggle("voxel", top, self.overworld) then
-            Pipelines.setLevel("voxel",
-              Voxel.nextHotkeyLevel(Pipelines.level("voxel")))
-            stepped = true
-          end
-        else
-          stepped = Pipelines.hotkey(key, top, self.overworld) and true
-        end
-        if stepped then
-          Pipelines.syncOptions(self.save.options)
-          -- 3 is the key that used to turn TILT on and sits next to the one
-          -- that used to turn GBC FX on, and this mod has taken both away.
-          -- A player who left either running before enabling the mod would
-          -- otherwise have no way back to off, and both fight the diorama:
-          -- TILT is the flat fake of what this mode does for real, and GBC
-          -- FX is a full-screen present pass over the top of it. So the
-          -- VOXEL key clears them on EVERY press, not just the press that
-          -- switches the mode on -- cycling back round to OFF leaves them
-          -- off too, which is the state the key is now the only route to.
-          if key == "3" then
-            self.save.options.tilt = 0
-            self.save.options.gbcfx = 0
-            require("src.render.GBCFX").setLevel(0)
-          end
-          require("src.render.Tilt").setLevel(self.save.options.tilt or 0)
-          self:writeOptions()
-          return
-        end
-      elseif Pipelines.canToggle("voxel", top, self.overworld) then
-        -- All three answer to the voxel pass's own free-roam gate --
-        -- borrowed from the registry rather than restated, so a press
-        -- mid-warp or mid-cutscene is refused for the wireframe exactly when
-        -- it would be for the mode itself. Two of them parameterise that
-        -- pass; the third (3D-BTL) decides what a battle is drawn over, and
-        -- wants the same gate for a different reason: the answer is read
-        -- when the fight starts, so flipping it from inside one would be a
-        -- switch that appeared to do nothing.
-        claim:cycle(self)
-        -- 8 is one of the two ways staged battles get switched on, and they
-        -- pin BATTLE LAYOUT to OG (see the rows hook). The other two keys
-        -- parameterise the pass and leave the layout alone; the guard answers
-        -- for all three, so nothing here has to know which key it was.
-        if stagedBattles() then OverworldBattle.forceOG(self) end
-        return
-      end
-    end
-    return inner(self, key)
+  local top = game.stack and game.stack:top()
+  
+  -- Handle VOXEL pipeline hotkey (custom behavior: walks angle rungs, skips FULL)
+  if action == "pipeline" and Pipelines.canToggle("voxel", top, game.overworld) then
+    Pipelines.setLevel("voxel", Voxel.nextHotkeyLevel(Pipelines.level("voxel")))
+    Pipelines.syncOptions(game.save.options)
+    -- Clear TILT and GBC FX on every VOXEL keypress (see original implementation)
+    game.save.options.tilt = 0
+    game.save.options.gbcfx = 0
+    require("src.render.GBCFX").setLevel(0)
+    require("src.render.Tilt").setLevel(game.save.options.tilt or 0)
+    game:writeOptions()
+    return true
   end
-end
+  
+  -- Only handle mod setting hotkeys when voxel mode can be toggled (free-roam only)
+  if not Pipelines.canToggle("voxel", top, game.overworld) then
+    return false
+  end
+  
+  if action == "voxelGrid" then
+    VoxelGrid.setting:cycle(game)
+    game:writeOptions()
+    return true
+  elseif action == "worldCurve" then
+    WorldCurve.setting:cycle(game)
+    game:writeOptions()
+    return true
+  elseif action == "overworldBattle" then
+    OverworldBattle.setting:cycle(game)
+    if stagedBattles() then
+      OverworldBattle.forceOG(game)
+    end
+    game:writeOptions()
+    return true
+  elseif action == "drawDistance" then
+    DrawDistance.setting:cycle(game)
+    game:writeOptions()
+    return true
+  end
+  
+  return false
+end)
+
+-- The engine's built-in hotkeys (3 for VOXEL, 6 for T-SHIFT) are handled through
+-- the pipeline registry and don't need mod.hotkey registration. They appear
+-- in the hotkey menu through the engine's own system.
 
 -- ------- the mode's rows, kept together
 --
