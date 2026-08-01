@@ -22,7 +22,7 @@ return {
       "on the 1ST rung the wall-bump sound is silent -- the free walk slides along whatever it grazes rather than making a discrete blocked step, so the grid game's bonk came out as a rattle; the grid walk keeps its own",
       "while HORDE MODE runs, the world is held still around it: no wild encounters, no trainers walking up, no talking to anyone, no START menu and no changing the camera rung -- doors and warps keep working, because the crowd follows the player through them",
       "mod hotkeys (V-GRID, V-CURVE, 3D-BTL, DRAW DIST) are registered through the game's hotkey system and can be rebound",
-      "hotkey 9 (default) is added for draw distance control (NEAR / MILD / FAR) to limit how many adjacent maps are rendered",
+      "hotkey 9 (default) is added for draw distance control (OFF / NEAR / MILD / FAR) to limit how many adjacent maps are rendered",
     },
     added = {
       "VOXEL options row and hotkey 3 (OFF / 15 / 35 / 50 / 75 degrees / 1ST, a first-person camera with free look and free movement)",
@@ -34,7 +34,7 @@ return {
       "T-SHIFT options row and hotkey 6 (default, OFF / 1 / 2 / 3), the miniature blur",
       "V-GRID on hotkey 5 (default, rebindable) and V-CURVE on hotkey 7 (default, rebindable)",
       "3D-BTL on hotkey 8 (default, rebindable, ON / OFF, on by default), battles fought on the world map",
-      "DRAW DIST options row and hotkey 9 (default, rebindable, NEAR / MILD / FAR), controls how many adjacent maps are rendered for performance",
+      "DRAW DIST options row and hotkey 9 (default, rebindable, OFF / NEAR / MILD / FAR), controls how many adjacent maps are rendered for performance",
       "BACK SPRITES options row (OFF / ON, off by default), which keeps your own Pokemon on the battle menu in its classic slot while the foe stands out on the map",
       "VR options row (OFF / ON, off by default): PCVR through OpenXR on Windows -- the diorama as a head-tracked tabletop model presented at the rung's own angle and framing on the orbit rungs, life-size first person on 1ST, a staged battle snapping the headset (through a fade to black) into the flat game's own over-the-shoulder seat at life scale, a voxel Pokedex flush along the left controller in first person and in battles (menus, dialogs and the 2D battle screen on its screen; the diorama does without it), the sky and its sun and moon anchored in space (bands, GBC dither and twilight glow alike -- nothing in the sky reacts to the head), the floating panel wearing the GB frame near-square rather than the whole monitor-wide window (scaled into the headset, so the picture and its ratio are identical at every window size, fullscreen included), the window as mirror; needs a runtime (SteamVR/Oculus/WMR) and the mod on a real folder",
       "VR controllers (Touch/Index/WMR, rebindable in the runtime): left stick moves, A/B are A/B, either trigger is START, left stick click steps the VOXEL angle ladder exactly as the 3 key and SELECT do; in 1ST the right stick snap-turns 45 degrees a flick; in the diorama the right stick zooms and a squeezed grip drags the table's height; no controller button leaves VR -- that is the VR row's job",
