@@ -116,6 +116,8 @@ local stick = { x = 0, y = 0 }        -- right stick, latest event values
 local mouseDX, mouseDY = 0, 0         -- relative counts since last update
 local lookTouch = nil                 -- { id, x, y } of the claimed finger
 local touchMove = nil                 -- the touch d-pad's analog deflection
+local rightJoystickTouch = nil       -- { id, x, y } of the right joystick finger
+local rightJoystickVector = nil       -- the right joystick's analog deflection
 local captured = false                -- mouse relative mode engaged by us
 
 -- the placed-camera record this module last handed to Voxel3D, so passes
@@ -402,6 +404,17 @@ function FirstPerson.update(dt)
       FirstPerson.lookBy(-cy * FirstPerson.STICK_YAW * dt,
                          cp * FirstPerson.STICK_PITCH * dt)
     end
+    
+    -- the virtual right joystick from touch controls
+    if rightJoystickVector then
+      local rjx, rjy = rightJoystickVector.x, rightJoystickVector.y
+      local cj, cpj = curve(rjx), curve(rjy)
+      if cj ~= 0 or cpj ~= 0 then
+        -- negated yaw for the same reason as the mouse above
+        FirstPerson.lookBy(-cj * FirstPerson.STICK_YAW * dt,
+                           cpj * FirstPerson.STICK_PITCH * dt)
+      end
+    end
   end
 end
 
@@ -676,12 +689,33 @@ function FirstPerson.install()
     return ok and v or nil
   end
 
+  local function rightJoystickVector(x, y)
+    local ok, v = pcall(function()
+      local L = TouchControls:layout()
+      local rj = L.rightJoystick
+      if not rj then return nil end
+      local half = rj.w * 0.65
+      return { x = math.max(-1, math.min(1, (x - rj.cx) / half)),
+               y = math.max(-1, math.min(1, (y - rj.cy) / half)) }
+    end)
+    return ok and v or nil
+  end
+
   do
     local inner = Game.touchpressed
     function Game:touchpressed(id, x, y)
       if FirstPerson.driving() then
         local onControl = nil
         pcall(function() onControl = TouchControls:hitTest(x, y) end)
+        
+        -- Check if touch is on right joystick
+        local rjVec = rightJoystickVector(x, y)
+        if rjVec and not rightJoystickTouch then
+          rightJoystickTouch = { id = id, x = x, y = y }
+          rightJoystickVector = rjVec
+          return
+        end
+        
         if not onControl and not lookTouch then
           -- HORDE MODE: a tap on open screen is a SHOT, fired on the press
           -- rather than on a release that turned out not to be a drag --
@@ -706,6 +740,14 @@ function FirstPerson.install()
   do
     local inner = Game.touchmoved
     function Game:touchmoved(id, x, y)
+      if rightJoystickTouch and rightJoystickTouch.id == id then
+        local rjVec = rightJoystickVector(x, y)
+        if rjVec then
+          rightJoystickVector = rjVec
+        end
+        return
+      end
+      
       if lookTouch and lookTouch.id == id then
         local w = 1280
         pcall(function() w = love.graphics.getWidth() end)
@@ -728,6 +770,11 @@ function FirstPerson.install()
   do
     local inner = Game.touchreleased
     function Game:touchreleased(id, x, y)
+      if rightJoystickTouch and rightJoystickTouch.id == id then
+        rightJoystickTouch = nil
+        rightJoystickVector = nil
+        return
+      end
       if lookTouch and lookTouch.id == id then
         lookTouch = nil
         return
@@ -742,6 +789,7 @@ function FirstPerson.install()
     local inner = Game.focus
     function Game:focus(f)
       lookTouch, touchMove = nil, nil
+      rightJoystickTouch, rightJoystickVector = nil, nil
       stick.x, stick.y = 0, 0
       mouseDX, mouseDY = 0, 0
       return inner(self, f)

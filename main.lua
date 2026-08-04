@@ -82,6 +82,10 @@ local OverworldBattle = V.require("OverworldBattle")
 local BattleExit = V.require("BattleExit")
 local DayNight = V.require("DayNight")
 local DayTint = V.require("DayTint")
+local Water = V.require("Water")
+local AntiAlias = V.require("AntiAlias")
+local FirstPerson = V.require("FirstPerson")
+local FreeMove = V.require("FreeMove")
 
 -- Forward declaration: the voxel pipeline's update hook (registered below)
 -- calls this, and it is defined further down with the settings it drives.
@@ -166,6 +170,11 @@ mod.content.render_pipelines:register("voxel", {
     -- battles and menus, and a CYCLE evening falls mid-fight exactly as it
     -- would mid-walk
     DayNight.update(dt)
+    -- the first-person head, on the same tick: its blend in and out of the
+    -- orbit, the mouse capture lifecycle, and the frame's stick-rate look.
+    -- Unconditional like Voxel.update, because the blend has to keep easing
+    -- OUT after the rung is left
+    FirstPerson.update(dt)
     -- The overworld battle rides this hook rather than owning a pipeline of
     -- its own, because it owns no pass of the FRAME: it draws under a battle
     -- screen the engine composites, which is not a stage the registry has.
@@ -702,6 +711,20 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
+
+-- ------- first-person camera input
+--
+-- The first-person camera needs input handlers for mouse, gamepad, joystick,
+-- and touch to control look direction and movement. These are installed once
+-- at mod load so the input system is ready when the 1ST rung is selected.
+FirstPerson.install()
+
+-- ------- free movement system
+--
+-- First-person mode replaces the grid walk with free camera-relative movement.
+-- FreeMove.install() wraps OverworldState:handleInput to intercept input when
+-- the 1ST rung is active and walk the player by collision rather than grid cells.
+FreeMove.install()
 
 -- The overworld's own pushBattle is the choke point for a wild encounter or
 -- a trainer, and it is wrapped. A battle that arrives some other way -- a
