@@ -1300,7 +1300,6 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
       end
     end
   end
-               fpull, ShadowMap.snug(nil))
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit then
       Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),

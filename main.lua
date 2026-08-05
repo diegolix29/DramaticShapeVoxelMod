@@ -472,7 +472,7 @@ mod.hooks:wrap("game.hotkey", function(action, game)
   require("src.render.Tilt").setLevel(game.save.options.tilt or 0)
   game:writeOptions()
   return true
-end
+end)
 
 -- The VR stick click makes this same step (VR.stepView): the function is
 -- a local of this file, so the handoff is explicit rather than a
