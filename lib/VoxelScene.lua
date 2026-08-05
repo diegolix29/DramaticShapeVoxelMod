@@ -30,6 +30,8 @@ local Pokedex = V.require("Pokedex")
 local DrawDistance = V.require("DrawDistance")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
+local PlayerModel = V.require("PlayerModel")
+local StadiumFollower = V.require("StadiumFollower")
 
 local VoxelScene = {}
 
@@ -602,6 +604,10 @@ local function posesOf(state, spriteColors)
         -- reads the same list and deliberately does not check the mark
         me.isPlayer = true
       end
+      -- Mark Pikachu follower for Stadium model rendering
+      if e.pikachuFollower then
+        posed[#posed].isFollower = true
+      end
     end
   end
   return posed, me
@@ -677,8 +683,22 @@ local function drawCast(state, posed, atlasFor, yaw)
   local hideMe = FirstPerson.hidePlayer()
   for _, p in ipairs(posed) do
     if not (p.isPlayer and hideMe) then
-      drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
-                 p.colors, p.lift, yaw)
+      -- Check if this is the player and a custom model is loaded
+      if p.isPlayer and PlayerModel.loaded() then
+        print("VoxelScene: Drawing custom player model, isPlayer:", p.isPlayer, "loaded:", PlayerModel.loaded())
+        -- Draw custom 3D model instead of sprite
+        PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), viewFacing(p), p.flip)
+      -- Check if this is the Pikachu follower and Stadium follower is loaded
+      elseif p.isFollower and StadiumFollower.loaded() then
+        -- Update follower animation
+        StadiumFollower.update(1 / 60)
+        -- Draw Stadium follower model instead of sprite
+        StadiumFollower.draw(p.px, p.py, viewFacing(p))
+      else
+        -- Draw normal sprite entity
+        drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
+                   p.colors, p.lift, yaw)
+      end
     end
   end
   -- back on for everything textured from the atlas again -- figures, grass

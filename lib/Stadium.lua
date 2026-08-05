@@ -165,6 +165,16 @@ local function showingTrainer(battle, side)
   if side == "enemy" then
     return (battle.showEnemyTrainer and battle.trainerPic) and true or false
   end
+  -- For player side, check if they have a Stadium player model selected
+  -- If they do, show the Stadium model instead of the trainer back sprite
+  local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
+  if okPlayerModel and PlayerModel then
+    local playerDex = PlayerModel.getStadiumDex()
+    if playerDex then
+      -- Player has a Stadium model selected, don't show trainer sprite
+      return false
+    end
+  end
   return (battle.showPlayerBack and battle.playerBackPic) and true or false
 end
 
@@ -351,7 +361,17 @@ function Stadium.update(dt, battle, groundY)
     local battler = side == "player" and battle.player or battle.enemy
     local dex = nil
     if battler and not showingTrainer(battle, side) then
-      dex = session.transform[side] or dexOf(battler.mon and battler.mon.species)
+      -- For player side during intro, use the player's selected Stadium model
+      if side == "player" and battle.phase == "intro" then
+        local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
+        if okPlayerModel and PlayerModel then
+          dex = PlayerModel.getStadiumDex()
+        end
+      end
+      -- Otherwise use the actual Pokemon's dex
+      if not dex then
+        dex = session.transform[side] or dexOf(battler.mon and battler.mon.species)
+      end
     end
 
     -- A DIFFERENT POKEMON IS IN THIS SLOT. Normally that shows up as a
