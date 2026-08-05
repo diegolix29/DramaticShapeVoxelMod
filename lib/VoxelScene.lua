@@ -250,8 +250,16 @@ end
 -- reads its own shadowing with must describe the same frame, or the
 -- mirror-flip half of the pair asks the map about texels the sun filed
 -- under the other cheek.
+-- The player's own card asks a different function for the same answer:
+-- their body's bearing is what the camera is derived FROM, so it is known
+-- continuously rather than as one of four directions, and measuring
+-- against the compass point instead flicks the card to a profile for a
+-- frame or two when the camera is spun fast (see playerFacing).
 local function viewFacing(p)
   if FirstPerson.cardBlend() > 0.5 then
+    if p.isPlayer then
+      return FirstPerson.playerFacing(p.facing, p.px + 8, p.py + 8)
+    end
     return FirstPerson.apparentFacing(p.facing, p.px + 8, p.py + 8)
   end
   return p.facing
@@ -969,6 +977,16 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
     ShadowMap.draw(BattleBillboard.mesh(), card.tex, ShadowMap.snug(card.model))
   end
   ShadowMap.sprites(false)
+  -- and the STADIUM models, outside the sprite flag and un-snugged, for
+  -- the reasons the flat battle pass gives (BattleScene.castShadows):
+  -- these are geometry, not cut-outs
+  pcall(function()
+    local stageArena, stageY = V.require("OverworldBattle").stage()
+    if stageArena and stageArena.discs then
+      V.require("StadiumStage").cast(ShadowMap, stageArena, stageY or 0)
+    end
+    V.require("Stadium").cast(ShadowMap)
+  end)
 
   ShadowMap.finish(sig)
 end
@@ -1195,6 +1213,24 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
         Voxel3D.draw(BattleBillboard.mesh(), card.tex, card.model,
                      BattleBillboard.PULL)
       end
+      -- and, on the STADIUM rungs, the models -- the same skinned meshes the
+      -- flat pass and the sun already used this frame, drawn again through
+      -- THIS eye. Unlike the cards there is nothing per-eye about them: a
+      -- model faces its opponent, not the viewer, so both eyes see the same
+      -- pose from their own seats, which is what makes it read as solid.
+      --
+      -- On a disc rung the platforms come with them. In a headset the world is
+      -- still drawn -- the player is standing IN it, which is the whole point
+      -- of the headset, so the rung's "no map" does not apply here -- and the
+      -- discs then read as a stage set down on the ground, which is what they
+      -- are.
+      pcall(function()
+        local stageArena, stageY = V.require("OverworldBattle").stage()
+        if stageArena and stageArena.discs then
+          V.require("StadiumStage").draw(stageArena, stageY or 0)
+        end
+        V.require("Stadium").draw(BattleBillboard.PULL)
+      end)
       if battleTex.flash then Voxel3D.flatten(nil) end
       -- and the MOVE ANIMATIONS, standing on the same arena: the
       -- engine's own effects layer on the plane through both cells
