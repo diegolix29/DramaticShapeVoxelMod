@@ -342,7 +342,9 @@ end
 -- ------- Stadium Pokemon player model
 --
 -- Cycle through Pokemon species for the player model
-function PlayerModelPick.cyclePokemonPlayer()
+-- dir: 1 for forward (right arrow), -1 for backward (left arrow)
+function PlayerModelPick.cyclePokemonPlayer(dir)
+  dir = dir or 1  -- Default to forward if no direction specified
   local PlayerModel = V.require("PlayerModel")
   local current = PlayerModel.getStadiumDex()
   
@@ -355,10 +357,25 @@ function PlayerModelPick.cyclePokemonPlayer()
     end
   end
   
-  -- Move to next species (or disable if at end)
-  local nextIndex = currentIndex + 1
-  if nextIndex > #PlayerModelPick.POPULAR_SPECIES then
-    nextIndex = 0  -- Disable (back to normal player sprite)
+  -- Move to next/previous species based on direction
+  local nextIndex
+  if dir > 0 then
+    -- Forward (right arrow): count up
+    nextIndex = currentIndex + 1
+    if nextIndex > #PlayerModelPick.POPULAR_SPECIES then
+      nextIndex = 0  -- Disable (back to normal player sprite)
+    end
+  else
+    -- Backward (left arrow): count down
+    if currentIndex == 0 then
+      -- If currently disabled, go to the last species (151)
+      nextIndex = #PlayerModelPick.POPULAR_SPECIES
+    else
+      nextIndex = currentIndex - 1
+      if nextIndex < 0 then
+        nextIndex = 0  -- Disable
+      end
+    end
   end
   
   -- Ensure the directory exists
@@ -431,8 +448,8 @@ function PlayerModelPick.mewtwoRow()
       end
       return "DEX " .. current
     end,
-    step = function(game)
-      pcall(PlayerModelPick.cyclePokemonPlayer)
+    step = function(game, dir)
+      pcall(PlayerModelPick.cyclePokemonPlayer, dir)
       return true
     end,
   }
@@ -441,7 +458,9 @@ end
 -- ------- Stadium follower selection
 --
 -- Cycle through popular species for the follower
-function PlayerModelPick.cycleFollower()
+-- dir: 1 for forward (right arrow), -1 for backward (left arrow)
+function PlayerModelPick.cycleFollower(dir)
+  dir = dir or 1  -- Default to forward if no direction specified
   local StadiumFollower = V.require("StadiumFollower")
   local current = StadiumFollower.getSpecies()
   
@@ -454,10 +473,25 @@ function PlayerModelPick.cycleFollower()
     end
   end
   
-  -- Move to next species (or disable if at end)
-  local nextIndex = currentIndex + 1
-  if nextIndex > #PlayerModelPick.POPULAR_SPECIES then
-    nextIndex = 0  -- Disable
+  -- Move to next/previous species based on direction
+  local nextIndex
+  if dir > 0 then
+    -- Forward (right arrow): count up
+    nextIndex = currentIndex + 1
+    if nextIndex > #PlayerModelPick.POPULAR_SPECIES then
+      nextIndex = 0  -- Disable
+    end
+  else
+    -- Backward (left arrow): count down
+    if currentIndex == 0 then
+      -- If currently disabled, go to the last species (151)
+      nextIndex = #PlayerModelPick.POPULAR_SPECIES
+    else
+      nextIndex = currentIndex - 1
+      if nextIndex < 0 then
+        nextIndex = 0  -- Disable
+      end
+    end
   end
   
   if nextIndex == 0 then
@@ -495,8 +529,8 @@ function PlayerModelPick.followerRow()
       end
       return "DEX " .. current
     end,
-    step = function(game)
-      pcall(PlayerModelPick.cycleFollower)
+    step = function(game, dir)
+      pcall(PlayerModelPick.cycleFollower, dir)
       return true
     end,
   }

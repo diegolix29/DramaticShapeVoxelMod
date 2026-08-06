@@ -62,7 +62,21 @@ end
 
 -- Whether a player model is currently installed.
 function PlayerModelInstall.installed()
-  return PlayerModelInstall.modelPath() ~= nil
+  local marker = readMarker()
+  if not marker or marker.format ~= PlayerModelInstall.FORMAT then
+    return false
+  end
+  if not marker.filename or marker.filename == "" then
+    return false
+  end
+  -- Check if this is a Stadium model marker (format: stadium_player_X)
+  local dexStr = marker.filename:match("stadium_player_(%d+)")
+  if dexStr then
+    return true  -- Stadium models don't need physical files
+  end
+  -- For regular models, check if the file exists
+  local path = PlayerModelInstall.DIR .. "/" .. marker.filename
+  return isFile(path)
 end
 
 -- Get the filename of the currently installed model.

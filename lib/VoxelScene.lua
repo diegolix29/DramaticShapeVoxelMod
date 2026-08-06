@@ -1,4 +1,4 @@
-﻿-- Voxel world mode: assemble and draw one frame of the 3D scene.
+-- Voxel world mode: assemble and draw one frame of the 3D scene.
 --
 -- World space is world pixels and shares its origin with the 2D paths, so
 -- the terrain mesh needs no transform at all and a connected map just
@@ -277,8 +277,12 @@ local function drawShadow(sprite, px, py, facing, phase, flip, gh, lift, yaw)
   local frame, mirror = frameFor(def, facing, phase, flip, yaw)
   local mesh = SpriteBillboards.shadowQuad(def, frame)
   if not mesh then return end
+  
+  -- Get sprite dimensions for dynamic sizing (texture dims and world dims)
+  local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
+  
   Voxel3D.draw(mesh, sprite:resolveImage(),
-               Voxel3D.shadowMatrix(px, py, gh, lift, mirror))
+               Voxel3D.shadowMatrix(px, py, gh, lift, mirror, worldWidth, worldHeight))
 end
 
 -- Where a billboard character's card stands: on the middle of its cell at
@@ -315,19 +319,23 @@ end
 -- applied to a vertex. Correct billboard behavior is to tip the card back
 -- by pitch in its OWN local frame first, then swing the already-tipped
 -- card around the world +Y axis to face the camera's yaw.
-local function billboardMatrix(px, py, y, mirror, yaw)
+local function billboardMatrix(px, py, y, mirror, yaw, spriteWidth, spriteHeight)
+  local w = spriteWidth or 16
+  local h = spriteHeight or 16
+  local halfW = w / 2
+  local halfH = h / 2
   local b = FirstPerson.cardBlend()
-  local m = Mat4.translate(px + 8, y, py + 8)
+  local m = Mat4.translate(px + halfW, y, py + halfH)
   
   if b > 0 then
-    m = Mat4.mul(m, Mat4.rotateY(FirstPerson.cardYaw(px + 8, py + 8) * b))
+    m = Mat4.mul(m, Mat4.rotateY(FirstPerson.cardYaw(px + halfW, py + halfH) * b))
   elseif yaw and yaw ~= 0 then
     m = Mat4.mul(m, Mat4.rotateY(yaw))
   end
   m = Mat4.mul(m, Mat4.rotateX((leanAngle() - math.pi / 2) * (1 - b)))
   
   if mirror then m = Mat4.mul(m, Mat4.scale(-1, 1, 1)) end
-  return Mat4.mul(m, Mat4.translate(-8, 0, 0))
+  return Mat4.mul(m, Mat4.translate(-halfW, 0, 0))
 end
 
 local function billboardPull()
@@ -402,6 +410,19 @@ local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
   local frame, mirror = frameFor(def, facing, phase, flip, yaw)
   local mesh = SpriteBillboards.mesh(def, frame)
   if not mesh then return false end
+  
+  -- Get sprite dimensions for dynamic sizing (texture dims and world dims)
+  local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
+  
+  -- Apply LOD bias for sharpness when scaling down
+  local scale = def.scale or 1.0
+  if scale < 1.0 then
+    local lodBias = SpriteBillboards.getLodBiasForScale(scale)
+    if lodBias ~= 0.0 then
+      Voxel3D.setLodBias(lodBias)
+    end
+  end
+  
   -- Camera-ward pull (applied per vertex in the shader, along each
   -- vertex's own eye ray, so it is a PURE depth bias with zero screen
   -- drift): lets the leaned-back head win against the wall it leans
@@ -411,9 +432,9 @@ local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
   -- (castShadows draws this mesh through ShadowMap.snug) -- is where each
   -- vertex asks whether the light reached it; see ShadowMap.snug for why
   -- the lookup must match the stored transform to the letter
-  Voxel3D.draw(mesh, tex, billboardMatrix(px, py, y, mirror, yaw),
+  Voxel3D.draw(mesh, tex, billboardMatrix(px, py, y, mirror, yaw, worldWidth, worldHeight),
                billboardPull(),
-               ShadowMap.snug(Voxel3D.casterMatrix(px, py, y, mirror)))
+               ShadowMap.snug(Voxel3D.casterMatrix(px, py, y, mirror, worldWidth, worldHeight)))
   return true
 end
 
@@ -439,7 +460,11 @@ local function drawGhost(p, yaw)
     tex = TerrainAtlas.forSprite(def.image, p.colors) or tex
   end
   local y = p.gh + (p.lift or 0)
-  Voxel3D.draw(mesh, tex, billboardMatrix(p.px, p.py, y, mirror, yaw),
+  
+  -- Get sprite dimensions for dynamic sizing (texture dims and world dims)
+  local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
+  
+  Voxel3D.draw(mesh, tex, billboardMatrix(p.px, p.py, y, mirror, yaw, worldWidth, worldHeight),
                billboardPull())
 end
 
@@ -685,7 +710,6 @@ local function drawCast(state, posed, atlasFor, yaw)
     if not (p.isPlayer and hideMe) then
       -- Check if this is the player and a custom model is loaded
       if p.isPlayer and PlayerModel.loaded() then
-        print("VoxelScene: Drawing custom player model, isPlayer:", p.isPlayer, "loaded:", PlayerModel.loaded())
         -- Draw custom 3D model instead of sprite
         PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), viewFacing(p), p.flip)
       -- Check if this is the Pikachu follower and Stadium follower is loaded
@@ -984,10 +1008,12 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
     local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw)
     local mesh = SpriteBillboards.shadowQuad(def, frame)
     if mesh then
+      -- Get sprite dimensions for dynamic sizing (texture dims and world dims)
+      local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
       ShadowMap.draw(mesh, p.sprite:resolveImage(),
                      ShadowMap.snug(
                        Voxel3D.casterMatrix(p.px, p.py, p.gh + (p.lift or 0),
-                                            mirror)))
+                                            mirror, worldWidth, worldHeight)))
     end
   end
   -- a staged fight's mons (VR frames only): the same cards the eye pass

@@ -167,6 +167,11 @@ local function showingTrainer(battle, side)
   end
   -- For player side, check if they have a Stadium player model selected
   -- If they do, show the Stadium model instead of the trainer back sprite
+  -- During intro, also check session.introPlayerDex
+  if battle.phase == "intro" and session.introPlayerDex then
+    -- Player has a Stadium model selected for intro, don't show trainer sprite
+    return false
+  end
   local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
   if okPlayerModel and PlayerModel then
     local playerDex = PlayerModel.getStadiumDex()
@@ -246,7 +251,17 @@ local function onField(battle, side, mon)
     -- latch that never fires (a link battle, a script pushing a battle
     -- straight to the menu) would hide the Pokemon for good, and being wrong
     -- in that direction is far worse than the two seconds this fixes.
-    if battle.phase == "intro" then return false end
+    --
+    -- EXCEPTION: If the player has a Stadium model selected, show it during
+    -- the intro instead of the trainer back sprite.
+    if battle.phase == "intro" then
+      -- Check if we have a player dex set for the intro
+      if session.introPlayerDex then
+        -- Player has a Stadium model selected, allow it to show during intro
+        return true
+      end
+      return false
+    end
   end
   local ok, hidden = pcall(battle.fxHidden, battle, battler)
   if ok and hidden then return false end
@@ -363,12 +378,35 @@ function Stadium.update(dt, battle, groundY)
     if battler and not showingTrainer(battle, side) then
       -- For player side during intro, use the player's selected Stadium model
       if side == "player" and battle.phase == "intro" then
-        local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
-        if okPlayerModel and PlayerModel then
-          dex = PlayerModel.getStadiumDex()
+        -- Read the marker file to get the player's selected dex (only once per intro)
+        if session.introPlayerDex == nil then
+          local okPlayerModelInstall, PlayerModelInstall = pcall(V.require, "PlayerModelInstall")
+          if okPlayerModelInstall and PlayerModelInstall then
+            local filename = PlayerModelInstall.modelFilename()
+            if filename then
+              local dexStr = filename:match("stadium_player_(%d+)")
+              if dexStr then
+                session.introPlayerDex = tonumber(dexStr)
+                -- Save the original species and swap it
+                if battler.mon and battler.mon.species then
+                  session.originalPlayerSpecies = battler.mon.species
+                  battler.mon.species = session.introPlayerDex
+                end
+              end
+            end
+          end
         end
+        dex = session.introPlayerDex
+      elseif side == "player" and battle.sendingOut then
+        -- Restore original species only when Pokemon is being sent out from pokeball
+        if session.originalPlayerSpecies and battler.mon then
+          battler.mon.species = session.originalPlayerSpecies
+          session.introPlayerDex = nil
+          session.originalPlayerSpecies = nil
+        end
+        session.introPlayerDex = nil
       end
-      -- Otherwise use the actual Pokemon's dex
+      -- Use the dex if set, otherwise use transform or actual Pokemon's dex
       if not dex then
         dex = session.transform[side] or dexOf(battler.mon and battler.mon.species)
       end
@@ -409,8 +447,9 @@ function Stadium.update(dt, battle, groundY)
     -- textures released out from under it the moment a fifth species enters
     -- the battle (see StadiumPack.keep).
     if mon.species then StadiumPack.keep(mon.species) end
-    mon.visible = (mon.rig ~= nil) and onField(battle, side, mon)
-                  and not (battler and battler.substituteHP)
+    local onFieldResult = onField(battle, side, mon)
+    local substituteHP = battler and battler.substituteHP
+    mon.visible = (mon.rig ~= nil) and onFieldResult and not substituteHP
     -- cleared up front, so a side that has just lost its rig cannot leave
     -- last frame's matrix behind it
     mon.model_matrix = nil
@@ -449,6 +488,9 @@ function Stadium.update(dt, battle, groundY)
       if mon.visible and arena then
         local cell = arena[side]
         local other = arena[side == "player" and "enemy" or "player"]
+        if side == "player" and battle.phase == "intro" then
+          print("Stadium.update: Player intro - cell =", cell ~= nil, "other =", other ~= nil)
+        end
         if cell and other then
           -- posed and skinned inside the same guard the draws use: this is
           -- where a bad track or a released texture is first touched, and a
@@ -460,6 +502,9 @@ function Stadium.update(dt, battle, groundY)
                                           other[2] - cell[2])
             mon:build()
           end)
+          if side == "player" and battle.phase == "intro" then
+            print("Stadium.update: Player intro - model_matrix set =", mon.model_matrix ~= nil)
+          end
         else
           mon.model_matrix = nil
         end

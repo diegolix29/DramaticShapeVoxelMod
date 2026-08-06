@@ -484,6 +484,16 @@ mod.hooks:wrap("game.hotkey", function(action, game)
   return true
 end)
 
+-- Hotkey table mapping keys to their corresponding settings/actions
+local HOTKEYS = {
+  ["3"] = "pipeline",
+  ["5"] = VoxelGrid.setting,
+  ["6"] = TiltShift.setting,
+  ["7"] = WorldCurve.setting,
+  ["8"] = OverworldBattle.setting,
+  ["9"] = DrawDistance.setting,
+}
+
 -- The VR stick click makes this same step (VR.stepView): the function is
 -- a local of this file, so the handoff is explicit rather than a
 -- reimplementation drifting out of date in lib/VR.lua.
@@ -715,11 +725,6 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     return V.require("StadiumRomPick").row()
   end)
   if okPick and importRow then extra[#extra + 1] = importRow end
-  -- Player model import row
-  local okPlayerModel, playerModelRow = pcall(function()
-    return V.require("PlayerModelPick").row()
-  end)
-  if okPlayerModel and playerModelRow then extra[#extra + 1] = playerModelRow end
   -- Mewtwo player model row
   local okMewtwo, mewtwoRow = pcall(function()
     return V.require("PlayerModelPick").mewtwoRow()
@@ -1059,16 +1064,6 @@ mod.events:on("save.loaded", function()
   -- switched on, and their rows are not there to switch them back off (see
   -- the pinEngineFx hook below)
   pinEngineFx()
-  -- Auto-load Mewtwo as player model if not already set
-  pcall(function()
-    local PlayerModel = V.require("PlayerModel")
-    local PlayerModelInstall = V.require("PlayerModelInstall")
-    if not PlayerModelInstall.installed() then
-      PlayerModel.loadStadium(150)  -- Mewtwo
-      PlayerModelInstall.writeMarker("stadium_mewtwo_150")
-      print("Auto-loaded Mewtwo as player model")
-    end
-  end)
 end)
 
 mod.events:on("save.created", function()
@@ -1078,16 +1073,6 @@ mod.events:on("save.created", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
-  -- Auto-load Mewtwo as player model for new saves
-  pcall(function()
-    local PlayerModel = V.require("PlayerModel")
-    local PlayerModelInstall = V.require("PlayerModelInstall")
-    if not PlayerModelInstall.installed() then
-      PlayerModel.loadStadium(150)  -- Mewtwo
-      PlayerModelInstall.writeMarker("stadium_mewtwo_150")
-      print("Auto-loaded Mewtwo as player model (new save)")
-    end
-  end)
 end)
 
 -- The engine's own time-of-day seam. OverworldState:timeOfDay() is an
