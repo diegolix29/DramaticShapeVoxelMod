@@ -32,6 +32,7 @@ local FirstPerson = V.require("FirstPerson")
 local BattleBillboard = V.require("BattleBillboard")
 local Pokedex = V.require("Pokedex")
 local Diorama = V.require("Diorama")
+local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
@@ -792,6 +793,14 @@ local function drawCast(state, posed, atlasFor, yaw)
     Voxel3D.draw(mesh, atlasFor(state.map), model, figPull,
                  ShadowMap.snug(caster))
   end)
+  for _, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      eachFigure(nb.map, nb.ox, nb.oy, function(mesh, model, caster)
+        Voxel3D.draw(mesh, atlasFor(nb.map), model, figPull,
+                     ShadowMap.snug(caster))
+      end)
+    end
+  end
   local neighborLimit = DrawDistance.neighborLimit()
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit then
@@ -943,6 +952,11 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
   -- and the sprite cards swap frames as it circles them, so a turn on the
   -- spot re-fits and redraws exactly like a camera move ("" outside 1ST)
   put(FirstPerson.signature())
+  -- and the window box, because WHICH neighbours went into the light is a
+  -- function of it (see ViewBox.signature): opening the row out brings a
+  -- map back inside the cut, and a sun map recorded without it would leave
+  -- that map standing in its own unlit shadow
+  put(ViewBox.signature())
   put(tostring(terrain))
   for i = 1, #nbMesh do put(tostring(nbMesh[i])) end
   for _, p in ipairs(posed) do
@@ -993,6 +1007,11 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
     end
   end
   for i, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  end
     if i <= neighborLimit and nbMesh[i] then
       ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
                      Mat4.translate(nb.ox, 0, nb.oy))
@@ -1004,6 +1023,11 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- far plane answers for the surface a shoreline tree's shadow falls on.
   ShadowMap.draw(water, atlasFor(state.map), nil)
   for i, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      ShadowMap.draw(nbWater and nbWater[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  end
     if i <= neighborLimit and nbWater and nbWater[i] then
       ShadowMap.draw(nbWater[i], atlasFor(nb.map),
                      Mat4.translate(nb.ox, 0, nb.oy))
@@ -1032,6 +1056,12 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- of starting a bias-width away.
   ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map),
                  ShadowMap.snug(nil))
+  for _, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+    end
+  end
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit then
       ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
@@ -1048,6 +1078,13 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   eachFigure(state.map, 0, 0, function(mesh, _, caster)
     ShadowMap.draw(mesh, atlasFor(state.map), ShadowMap.snug(caster))
   end)
+  for _, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      eachFigure(nb.map, nb.ox, nb.oy, function(mesh, _, caster)
+        ShadowMap.draw(mesh, atlasFor(nb.map), ShadowMap.snug(caster))
+      end)
+    end
+  end
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit then
       eachFigure(nb.map, nb.ox, nb.oy, function(mesh, _, caster)
@@ -1185,6 +1222,25 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     cx, cy = eyes.cx, eyes.cy
   end
 
+  -- and the ORBIT RUNGS' own viewport (lib/ViewBox): the flat screen's
+  -- answer to the same question the diorama's box asks -- the map cut to
+  -- the window that frames it, so a tilted world reads as a model with
+  -- sides rather than a map running off every edge. Flat frames only: a
+  -- headset's cut is Diorama's above, and the two must never both be live.
+  --
+  -- After the first-person block, so the box is centred on the camera
+  -- actually in charge and opens out with a dive into a head rather than
+  -- vanishing on the frame the rung changed.
+  --
+  -- Ahead of castShadows, deliberately: the sun draws the same neighbours
+  -- the eye does (both ask ViewBox.showsMap), so a map skipped out here is
+  -- skipped out there and nothing is left casting a shadow it cannot own.
+  if not eyes then
+    Voxel3D.cull = ViewBox.frame(cx, cy, vw, vh)
+  else
+    ViewBox.stop()
+  end
+
   -- A staged fight, seen by the VR eyes: the flat screen draws the battle
   -- SCREEN while one is up (this pass never runs), but the headset keeps
   -- looking at the world, so the world had better have the fight on it.
@@ -1223,6 +1279,15 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   pcall(Backdrop.draw, state)
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
+  -- the window box's coarse cut, exactly as the sun pass took it: the same
+  -- test on the same maps, so the light and the eye can never disagree
+  -- about which neighbours are in this frame (see ViewBox.showsMap)
+  for i, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  end
 
   -- interiors, then ground detail (lib/Ceiling.lua, lib/Flora.lua)
   pcall(Ceiling.draw, state, atlasFor)
@@ -1272,6 +1337,7 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     waterDraws[#waterDraws + 1] = { water, atlasFor(state.map), nil }
   end
   for i, nb in ipairs(state.neighbors or {}) do
+    if nbWater and nbWater[i] and ViewBox.showsMap(nb) then
     if i <= neighborLimit and nbWater and nbWater[i] then
       waterDraws[#waterDraws + 1] = { nbWater[i], atlasFor(nb.map),
                                       Mat4.translate(nb.ox, 0, nb.oy) }
@@ -1390,6 +1456,12 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   local lean = math.max(leanAngle(), 0.05)
   local pull = VoxelScene.pull(lean)
   Voxel3D.draw(ChunkMesher.grass(state.map), atlasFor(state.map), nil, pull)
+  for _, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy), pull)
+    end
+  end
   local neighborLimit = DrawDistance.neighborLimit()
   if neighborLimit == nil then
     for i, nb in ipairs(state.neighbors or {}) do
@@ -1418,6 +1490,14 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- flowers are snugged casters too, so they read their own shadowing
   -- through the same snugged transform the sun stored them with
   Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil,
+               fpull, ShadowMap.snug(nil))
+  for _, nb in ipairs(state.neighbors or {}) do
+    if ViewBox.showsMap(nb) then
+      Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy), fpull,
+                   ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+    end
+  end
                fpull)
   if neighborLimit == nil then
     for i, nb in ipairs(state.neighbors or {}) do
@@ -1481,10 +1561,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
 
   end   -- drawScene
 
-  -- the two diorama fields are this function's for the length of this
+  -- the viewport fields are this function's for the length of this
   -- function, whichever way it leaves (see where they are set)
   local function done(result)
     Voxel3D.cull, Voxel3D.keyColor = nil, nil
+    ViewBox.stop()
     return result
   end
 
