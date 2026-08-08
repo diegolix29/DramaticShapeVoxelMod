@@ -37,6 +37,7 @@ local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 local PlayerModel = V.require("PlayerModel")
 local StadiumFollower = V.require("StadiumFollower")
+local StadiumWilds = V.require("StadiumWilds")
 
 local VoxelScene = {}
 
@@ -638,6 +639,17 @@ local function posesOf(state, spriteColors)
       if e.pikachuFollower then
         posed[#posed].isFollower = true
       end
+      -- Carry over wild-spawn identity so StadiumWilds can recognize this
+      -- entity (isWildPokemon) and resolve its species to a dex number
+      -- (getEntitySpeciesDex) for stadium model loading. Without this, the
+      -- pose entry has none of the fields StadiumWilds looks for and every
+      -- wild Pokemon silently falls back to its flat sprite.
+      if e.overworldWildSpawn then
+        posed[#posed].overworldWildSpawn = true
+        posed[#posed].id = e.id
+        posed[#posed].spawnId = e.spawnId
+        posed[#posed].species = e.species
+      end
     end
   end
   return posed, me
@@ -697,6 +709,11 @@ local glint = {}
 -- Sprite sheets until the figure pass: their texture coordinates mean
 -- nothing to the tileset-shaped glass mask, so the glass is off or the
 -- panes' atlas positions stripe the cast with lamplight at night.
+-- debug frame counter for the throttled "StadiumWilds enabled" log below;
+-- drawCast is a plain local function (no self), so this lives as a module
+-- upvalue instead of the old (broken) self._debugFrameCount
+local debugFrameCount = 0
+
 local function drawCast(state, posed, atlasFor, yaw)
   Voxel3D.glass(false)
   Voxel3D.seams(false)
@@ -711,7 +728,9 @@ local function drawCast(state, posed, atlasFor, yaw)
   -- south. Both run through here, so the water's reflection copy -- drawn
   -- by this same function -- agrees with the frame to the pixel.
   local hideMe = FirstPerson.hidePlayer()
+  local entityCount = 0
   for _, p in ipairs(posed) do
+    entityCount = entityCount + 1
     if not (p.isPlayer and hideMe) then
       -- Check if this is the player and a custom model is loaded
       if p.isPlayer and PlayerModel.loaded() then
@@ -723,11 +742,44 @@ local function drawCast(state, posed, atlasFor, yaw)
         StadiumFollower.update(1 / 60)
         -- Draw Stadium follower model instead of sprite
         StadiumFollower.draw(p.px, p.py, viewFacing(p))
+      -- Check if this is a wild Pokemon and Stadium wilds is enabled
+      elseif StadiumWilds.enabled() then
+        local isWild = StadiumWilds.isWildPokemon(p)
+        if isWild then
+          -- Try to load the model if not already loaded
+          if not StadiumWilds.hasModel(p) then
+            StadiumWilds.loadEntityModel(p)
+          end
+          -- If model is available, draw it
+          if StadiumWilds.hasModel(p) then
+            StadiumWilds.updateEntity(p, 1 / 60)
+            StadiumWilds.drawEntity(p)
+          else
+            -- Fall back to sprite if model not available
+            drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
+                       p.colors, p.lift, yaw)
+          end
+        else
+          -- Not a wild Pokemon, draw normally
+          drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
+                     p.colors, p.lift, yaw)
+        end
       else
         -- Draw normal sprite entity
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, yaw)
       end
+    end
+  end
+  
+  -- Debug: print entity count once per second (60 frames)
+  debugFrameCount = debugFrameCount + 1
+  if debugFrameCount % 60 == 0 then
+    local okCheck, enabledCheck = pcall(function() return StadiumWilds.enabled() end)
+    if okCheck then
+      -- print("VoxelScene: Frame processed", entityCount, "entities, StadiumWilds enabled:", tostring(enabledCheck))
+    else
+      -- print("VoxelScene: Frame processed", entityCount, "entities, StadiumWilds enabled: error loading module")
     end
   end
   -- back on for everything textured from the atlas again -- figures, grass
@@ -1064,6 +1116,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- in voxel mode: :angle() is 0 whenever the camera hasn't been turned
   -- (or has settled back to north), so an unrotated camera is unaffected.
   local yaw = cam.angle and cam:angle() or 0
+  -- If a placed camera exists (e.g., from free_fly mod), use its yaw if available
+  local V3 = V.require("Voxel3D")
+  if V3 and V3.camera and V3.camera.yaw then
+    yaw = V3.camera.yaw
+  end
 
   -- the hour's light, before anything is cast or drawn: point the shared
   -- rig at the clock (or at noon, indoors -- a cave at midnight is exactly
@@ -1159,10 +1216,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- about anything but their viewpoint.
   local function drawScene()
 
-  -- the distant horizon and sky (lib/Backdrop.lua, lib/SkyLayer.lua):
+  -- the sky (lib/SkyLayer.lua) then distant horizon (lib/Backdrop.lua):
   -- before the terrain, depth writes off, so every real surface draws over them
-  pcall(Backdrop.draw, state)
+  -- Sky draws first as background, then horizon draws in front of it
   pcall(SkyLayer.draw, state)
+  pcall(Backdrop.draw, state)
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
 

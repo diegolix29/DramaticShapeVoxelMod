@@ -12,6 +12,7 @@ local Voxel3D = V.require("Voxel3D")
 local PlayerModelInstall = V.require("PlayerModelInstall")
 local StadiumPack = V.require("StadiumPack")
 local StadiumRig = V.require("StadiumRig")
+local StadiumMon = V.require("StadiumMon")
 
 local PlayerModel = {}
 
@@ -399,25 +400,40 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply rotation based on facing direction
     local yaw = 0
-    if b > 0 then
-      -- In free-roam mode
-      if facing == "down" then
-        -- When moving backwards, face the camera
-        yaw = FirstPerson.cardYaw(px + 8, py + 8) * b
-      else
-        -- When moving in other directions, face forward (away from camera)
-        yaw = (FirstPerson.cardYaw(px + 8, py + 8) + math.pi) * b
-      end
-    else
-      -- In other modes, rotate based on movement direction
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
-      end
+-- Normalize the facing string to lowercase to prevent case-sensitive fall-throughs
+  local face = type(facing) == "string" and string.lower(facing) or facing
+  
+  if b > 0 then
+    -- In free-roam mode, use camera-relative rotation like the player model
+    local cameraYaw = FirstPerson.cardYaw(px, py)
+
+    if face == "down" then
+      -- Moving backwards: face the camera
+      yaw = cameraYaw * b
+
+    elseif face == "up" then
+      -- Moving forward: face away from the camera
+      yaw = cameraYaw * b + (math.pi * b)
+
+    elseif face == "left" then
+      -- Moving left: turn 90 degrees left (matches 2D sign)
+      yaw = cameraYaw * b - ((math.pi / 2) * b)
+
+    elseif face == "right" then
+      -- Moving right: turn 90 degrees right (matches 2D sign)
+      yaw = cameraYaw * b + ((math.pi / 2) * b)
     end
+
+  else
+    -- In other modes, rotate based on movement direction
+    if face == "right" then
+      yaw = math.pi / 2
+    elseif face == "up" then
+      yaw = math.pi
+    elseif face == "left" then
+      yaw = -math.pi / 2
+    end
+  end
     
     if yaw ~= 0 then
       m = Mat4.mul(m, Mat4.rotateY(yaw))
@@ -430,11 +446,17 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply scaling for Stadium model (use similar scale to Pokemon in battles)
     local model = currentStadiumModel
-    local root = model.rootScale or 1
-    local h = model.height or 52.25
-    local k = root * 14 / math.max(h, 1e-6)  -- REF_HEIGHT = 14 from StadiumMon
-    local scale = k * 1.5  -- 0.5 * 4 = 2.0 (4x larger for Mewtwo)
+    local scale = StadiumMon.scaleFor(model) * 1.5  -- 0.5 * 4 = 2.0 (4x larger for Mewtwo)
     m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+    
+    -- Stand the model on its own lowest point and give back HOVER_CAP of
+    -- any authored hover, same as StadiumWilds/battle Pokemon -- otherwise
+    -- a species authored with a hover (or centred on its origin) renders
+    -- sunk into the ground instead of standing on it.
+    local lift = StadiumMon.liftFor(model)
+    if lift ~= 0 then
+      m = Mat4.mul(m, Mat4.translate(0, -lift, 0))
+    end
     
     -- Skin the mesh with the calculated yaw
     currentRig:skin(yaw)

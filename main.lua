@@ -187,6 +187,11 @@ mod.content.render_pipelines:register("voxel", {
     -- would fight anyone who changed one deliberately.
     applyFull(level)
     Voxel.update(dt, level)
+    -- Check for deferred follower load when Stadium models become available
+    local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+    if okFollower and StadiumFollower then
+      StadiumFollower.checkDeferred()
+    end
     -- the day/night clock, on the same always-running tick: Pipelines.update
     -- runs whatever the level, so time passes with the mode off, through
     -- battles and menus, and a CYCLE evening falls mid-fight exactly as it
@@ -833,6 +838,17 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     return V.require("PlayerModelPick").followerRow()
   end)
   if okFollower and followerRow then extra[#extra + 1] = followerRow end
+  
+  -- Stadium wilds row (only show if stadium packs are available)
+  local okWilds, wildsRow = pcall(function()
+    local StadiumInstall = V.require("StadiumInstall")
+    if StadiumInstall.available() then
+      return V.require("PlayerModelPick").wildsRow()
+    end
+    return nil
+  end)
+  if okWilds and wildsRow then extra[#extra + 1] = wildsRow end
+  
   return insertGrouped(out, extra)
 end)
 
@@ -1114,6 +1130,46 @@ mod.hooks:wrap("pokemon.sprite", function(next, path, ctx)
   return (def and def.spriteFront) or out
 end)
 
+-- With a Stadium species picked as the player's own overworld model
+-- (PlayerModelPick's row, PlayerModel.loadStadium), the player's TRAINER
+-- art -- their own back pic (the battle intro, before "Go!", and wherever
+-- BACK SPRITES pins it through the fight) and their own front pic (the
+-- trainer card) -- still drew the vanilla trainer regardless of what
+-- species was picked. player.sprite is the engine's seam for exactly this
+-- (see src/pokemon/Sprites.lua's header and the pokemon.sprite hook just
+-- above): every trainer pic load goes through it, keyed by which SIDE and
+-- what KIND of pic is being resolved.
+--
+-- next() first, so a mod that already replaced the trainer's own art
+-- (hagoromo_sprite, say) still gets asked; this only overrides when a
+-- Stadium species is actually selected, same as the 3D model swap in
+-- Stadium.lua's showingTrainer already does for the mid-battle model.
+--
+-- Front is scoped to the trainer card specifically -- the Hall of Fame and
+-- other "front" kinds are a portrait of the PLAYER, not a stand-in for
+-- whichever Pokemon they are currently modeled as, so those are left alone.
+mod.hooks:wrap("player.sprite", function(next, path, ctx)
+  local out = next(path, ctx)
+  if not (ctx and (ctx.side == "back"
+                    or (ctx.side == "front" and ctx.kind == "trainer_card"))) then
+    return out
+  end
+  local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
+  if not (okPlayerModel and PlayerModel) then return out end
+  local dex = PlayerModel.getStadiumDex()
+  if not dex then return out end
+  local data = ctx.data
+  local def = nil
+  if data and data.pokemon then
+    for _, d in pairs(data.pokemon) do
+      if d and d.dex == dex then def = d; break end
+    end
+  end
+  if not def then return out end
+  if ctx.side == "back" then return def.spriteBack or out end
+  return def.spriteFront or out
+end)
+
 -- Every ending path emits this, including a battle skipped before it drew,
 -- so this is where the map's cast comes back.
 mod.events:on("battle.ended", function()
@@ -1165,6 +1221,15 @@ mod.events:on("save.loaded", function()
   -- switched on, and their rows are not there to switch them back off (see
   -- the pinEngineFx hook below)
   pinEngineFx()
+  -- Load saved follower species (delayed to ensure Stadium models are available)
+  local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+  if okFollower and StadiumFollower then
+    StadiumFollower.loadSaved()
+  end
+  -- Check for deferred follower load after Stadium models become available
+  if okFollower and StadiumFollower then
+    StadiumFollower.checkDeferred()
+  end
 end)
 
 mod.events:on("save.created", function()
@@ -1174,6 +1239,40 @@ mod.events:on("save.created", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
+  -- Load saved follower species for new saves too
+  local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+  if okFollower and StadiumFollower then
+    StadiumFollower.loadSaved()
+  end
+end)
+
+-- Hook into overworld_wild_spawns entity creation
+-- This allows us to load stadium models for wild Pokemon when they spawn
+mod.events:on("world.entity.created", function(entity)
+  if not entity then return end
+  print("ADVANCED_SHAPE: world.entity.created called for entity:", entity.id)
+  local ok, StadiumWilds = pcall(V.require, "StadiumWilds")
+  if ok then
+    print("ADVANCED_SHAPE: StadiumWilds loaded, enabled:", StadiumWilds.enabled())
+    if StadiumWilds.enabled() and StadiumWilds.isWildPokemon(entity) then
+      print("ADVANCED_SHAPE: Loading stadium model for wild entity")
+      StadiumWilds.loadEntityModel(entity)
+    else
+      print("ADVANCED_SHAPE: Not loading stadium model - enabled:", StadiumWilds.enabled(), "isWild:", StadiumWilds.isWildPokemon(entity))
+    end
+  else
+    print("ADVANCED_SHAPE: Failed to load StadiumWilds module")
+  end
+end)
+
+-- Hook into overworld_wild_spawns entity removal
+mod.events:on("world.entity.removed", function(entity)
+  if not entity then return end
+  print("ADVANCED_SHAPE: world.entity.removed called for entity:", entity.id)
+  local ok, StadiumWilds = pcall(V.require, "StadiumWilds")
+  if ok then
+    StadiumWilds.clearEntity(entity)
+  end
 end)
 
 -- The engine's own time-of-day seam. OverworldState:timeOfDay() is an
